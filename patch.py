@@ -1,14 +1,12 @@
-import torch
 from transformers import DynamicCache
 from h2o_cache import H2OCache
 
 
 class H2OCacheAdapter(DynamicCache):
-    """Makes H2OCache look like HuggingFace's Cache to phi-2.
+    """Routes phi-2's cache calls through our H2OCache.
 
     Inherits from DynamicCache so the model's helper methods (get_seq_length,
-    __len__, etc.) all work out of the box. We only override update() to route
-    storage through our H2OCache, which handles eviction.
+    __len__, etc.) keep working out of the box.
     """
 
     def __init__(self, h2o_cache):
@@ -16,21 +14,24 @@ class H2OCacheAdapter(DynamicCache):
         self.h2o_cache = h2o_cache
 
     def update(self, key_states, value_states, layer_idx, cache_kwargs=None):
-        del cache_kwargs  # parent class passes this but H2O doesn't need it
+        del cache_kwargs  # parent passes this but H2O doesn't need it
         return self.h2o_cache.update(key_states, value_states, layer_idx)
 
     def get_seq_length(self, layer_idx=0):
-        # the model calls this to figure out position IDs for new tokens
-        # we report the current size of layer 0's cache
+        # model calls this to compute position IDs for new tokens
         cache = self.h2o_cache.key_cache[layer_idx]
-        if cache is None:
-            return 0
-        return cache.shape[2]  # seq_len dimension
+        return 0 if cache is None else cache.shape[2]
 
 
-def patch_model(model, max_cache_size=20, local_window_size=4):
+def patch_model(model, max_cache_size, local_window_size):
+    """Patch phi-2 with H2O eviction. Returns (cache, adapter, unpatch).
+
+    Call unpatch() when done — otherwise hooks accumulate across calls and
+    leak state from the old cache into new runs.
+    """
     num_layers = len(model.model.layers)
     cache = H2OCache(max_cache_size, local_window_size, num_layers)
+    handles = []
 
     for layer_idx, layer in enumerate(model.model.layers):
         def make_hook(idx):
@@ -42,7 +43,12 @@ def patch_model(model, max_cache_size=20, local_window_size=4):
                 return output
             return hook
 
-        layer.self_attn.register_forward_hook(make_hook(layer_idx))
+        handle = layer.self_attn.register_forward_hook(make_hook(layer_idx))
+        handles.append(handle)
+
+    def unpatch():
+        for h in handles:
+            h.remove()
 
     adapter = H2OCacheAdapter(cache)
-    return cache, adapter
+    return cache, adapter, unpatch

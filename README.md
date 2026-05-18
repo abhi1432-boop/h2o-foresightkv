@@ -1,6 +1,8 @@
 # heavy-hitter-kv-cache
 
-A from-scratch implementation of [H2O (Heavy Hitter Oracle)](https://arxiv.org/abs/2306.14048) KV cache eviction on Microsoft's phi-2.
+A from-scratch implementation of H2O (Heavy Hitter Oracle) KV cache eviction on Microsoft's phi-2.
+
+Paper: [NeurIPS 2023](https://neurips.cc/virtual/2023/poster/71645) · [arXiv](https://arxiv.org/abs/2306.14048)
 
 ## What it does
 
