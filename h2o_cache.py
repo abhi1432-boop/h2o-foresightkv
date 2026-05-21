@@ -1,3 +1,4 @@
+import math
 import torch
 
 
@@ -19,7 +20,7 @@ import torch
 #[batch size, attention heads, tokens processed(depends on where we are), head dimension]
 #head dimension = full embedding size / num heads = 2560 / 32 = 80 (each head gets its own slice)
 class H2OCache:
-    def __init__(self, max_cache_size, local_window_size, num_layers):
+    def __init__(self, max_cache_size, local_window_size, num_layers, use_foresight=False):
         # safety check — if window > budget, math below breaks
         assert local_window_size <= max_cache_size, "window can't exceed total budget"
 
@@ -38,6 +39,27 @@ class H2OCache:
         # this is the "heavy hitter score" — higher means more important to keep
         self.accumulated_scores = [None] * num_layers
 
+        # ForesightKV: when True, seed initial scores from a learned scorer instead
+        # of from prefill attention. Everything after that (accumulation, eviction)
+        # is identical — only the starting value changes.
+        self.use_foresight = use_foresight
+        # Stores per-layer prefill attention sums — populated during step 0,
+        # consumed by seed_from_prefill(), then no longer needed.
+        self._prefill_per_layer = [None] * num_layers
+
+        # In foresight mode we defer eviction until after seed_from_prefill() runs.
+        # That way the first eviction uses the scorer's predictions, not zeros.
+        # For standard H2O this is always True (evict immediately as usual).
+        self._prefill_done = not use_foresight
+
+        # Eviction tracking — maps original sequence position to the decode step
+        # at which it was first evicted. Used by evaluate.py to measure cold-start
+        # errors. We track layer 0 as a proxy (all layers evict in near-lockstep
+        # because they accumulate similar attention patterns).
+        self._layer0_positions = None   # list: cache_index -> original seq position
+        self.evicted_at_step = {}       # original_pos -> decode_step
+        self._decode_step = 0           # incremented each time layer 0 gets a new token
+
     def update(self, key_states, value_states, layer_idx):
         # called every forward pass. Job: add the new token's K and V to the cache.
         # key_states / value_states shape: [batch, heads, new_tokens, head_dim]
@@ -48,11 +70,19 @@ class H2OCache:
             # first call — cache is empty, just store what we got
             self.key_cache[layer_idx] = key_states
             self.value_cache[layer_idx] = value_states
+            # Initialize position tracking on the first (prefill) call for layer 0.
+            # _layer0_positions[i] = original sequence index of the token at cache slot i.
+            if layer_idx == 0:
+                self._layer0_positions = list(range(key_states.shape[2]))
         else:
             # cache already has past tokens — append new ones on the end
             # dim=2 is the sequence dimension: we're growing the "list of remembered tokens"
             self.key_cache[layer_idx] = torch.cat([self.key_cache[layer_idx], key_states], dim=2)
             self.value_cache[layer_idx] = torch.cat([self.value_cache[layer_idx], value_states], dim=2)
+            if layer_idx == 0 and self._layer0_positions is not None:
+                next_pos = self._layer0_positions[-1] + 1
+                self._layer0_positions.append(next_pos)
+                self._decode_step += 1
 
         # return the full cache so attention can run over all remembered tokens
         return self.key_cache[layer_idx], self.value_cache[layer_idx]
@@ -69,8 +99,16 @@ class H2OCache:
         new_scores = attn_weights[0].sum(dim=(0, 1)).detach()  # shape: [key_len]
 
         if self.accumulated_scores[layer_idx] is None:
-            # first call — no running totals yet, just store what we got
-            self.accumulated_scores[layer_idx] = new_scores
+            if self.use_foresight:
+                # Save the prefill attention per layer so seed_from_prefill() can
+                # use it as feature 3 and 4 when building the scorer input.
+                self._prefill_per_layer[layer_idx] = new_scores
+                # Initialize to zeros — seed_from_prefill() will replace these
+                # with the scorer's predicted importance scores after step 0.
+                self.accumulated_scores[layer_idx] = torch.zeros_like(new_scores)
+            else:
+                # Standard H2O: start the accumulator from the prefill attention.
+                self.accumulated_scores[layer_idx] = new_scores
         else:
             # the cache grew this step. The scores tensor needs to grow too.
             # Compare lengths to find how many brand-new positions exist:
@@ -87,7 +125,8 @@ class H2OCache:
             self.accumulated_scores[layer_idx] = self.accumulated_scores[layer_idx] + new_scores
 
         # if the cache is now bigger than our budget, drop the least-attended tokens
-        if self.key_cache[layer_idx].shape[2] > self.max_cache_size:
+        # (skipped during prefill in foresight mode — see seed_from_prefill)
+        if self._prefill_done and self.key_cache[layer_idx].shape[2] > self.max_cache_size:
             self._evict(layer_idx)
 
     def _evict(self, layer_idx):
@@ -127,8 +166,87 @@ class H2OCache:
         # final keep list = heavy hitters + local window (already in position order)
         keep = torch.cat([top_indices, local_indices])
 
+        # Record which original sequence positions are being dropped (layer 0 only).
+        # This lets evaluate.py ask "was token p evicted, and at what decode step?"
+        if layer_idx == 0 and self._layer0_positions is not None:
+            keep_set = set(keep.tolist())
+            for ci in range(cache_size):
+                if ci not in keep_set:
+                    orig = self._layer0_positions[ci]
+                    if orig not in self.evicted_at_step:
+                        self.evicted_at_step[orig] = self._decode_step
+            self._layer0_positions = [self._layer0_positions[i] for i in keep.tolist()]
+
         # slice the cache and scores down to only the kept positions
         # everything not in `keep` is silently dropped — its K, V, and score are gone
         self.key_cache[layer_idx] = self.key_cache[layer_idx][:, :, keep, :]
         self.value_cache[layer_idx] = self.value_cache[layer_idx][:, :, keep, :]
         self.accumulated_scores[layer_idx] = scores[keep]
+
+    def seed_from_prefill(self, input_ids, freq_table, scorer_model):
+        """Replace zero-initialized scores with scorer predictions.
+
+        Call this exactly once, immediately after the step-0 (prefill) forward
+        pass. After this point, normal accumulation continues on top of the
+        predicted scores instead of on top of prefill attention.
+
+        input_ids   — 1-D or 2-D LongTensor of the prompt token ids
+        freq_table  — dict mapping token_id -> count in training corpus
+        scorer_model — trained Scorer instance (nn.Module, eval mode)
+        """
+        if not self.use_foresight:
+            return
+
+        ids = input_ids.squeeze(0) if input_ids.dim() == 2 else input_ids
+        prompt_len = ids.shape[0]
+        num_layers  = self.num_layers
+
+        # Build [num_layers, prompt_len] prefill attention matrix from the stored
+        # per-layer sums that update_scores() saved during step 0.
+        prefill = torch.stack([
+            self._prefill_per_layer[l] if self._prefill_per_layer[l] is not None
+            else torch.zeros(prompt_len)
+            for l in range(num_layers)
+        ])  # [L, prompt_len]
+
+        # Feature 3: total prefill attention normalized within prompt
+        total = prefill.sum(dim=0)                                   # [prompt_len]
+        pf_sum = total.sum()
+        pf_norm = total / pf_sum if pf_sum > 0 else torch.ones(prompt_len) / prompt_len
+
+        # Feature 4: weighted mean layer index — captures where in the network
+        # this token receives most attention (early layers vs late layers)
+        layer_col  = torch.arange(num_layers, dtype=torch.float32).unsqueeze(1)
+        layer_denom = prefill.sum(dim=0).clamp(min=1e-9)
+        weighted    = (layer_col * prefill).sum(dim=0) / layer_denom
+        layer_depth = weighted / max(num_layers - 1, 1)              # [0, 1]
+
+        max_count = max(freq_table.values()) if freq_table else 1
+
+        feats = torch.zeros(prompt_len, 5)
+        for p in range(prompt_len):
+            feats[p, 0] = p / max(prompt_len - 1, 1)
+            feats[p, 1] = 1.0 if p < 5 else 0.0
+            count = freq_table.get(ids[p].item(), 0)
+            feats[p, 2] = math.log1p(count) / math.log1p(max_count) if max_count > 0 else 0.0
+            feats[p, 3] = pf_norm[p].item()
+            feats[p, 4] = layer_depth[p].item()
+
+        scorer_model.eval()
+        with torch.no_grad():
+            predicted = scorer_model(feats).squeeze(1)  # [prompt_len]
+
+        # Push predicted scores to every layer.  All 32 layers now start from the
+        # same importance estimate rather than from zero.
+        for layer_idx in range(self.num_layers):
+            if self.accumulated_scores[layer_idx] is not None:
+                device = self.accumulated_scores[layer_idx].device
+                self.accumulated_scores[layer_idx] = predicted.to(device).clone()
+
+        # Now that scores are meaningful, allow eviction going forward and run
+        # the first eviction pass (catches any prompt longer than the budget).
+        self._prefill_done = True
+        for layer_idx in range(self.num_layers):
+            if (self.key_cache[layer_idx] is not None
+                    and self.key_cache[layer_idx].shape[2] > self.max_cache_size):
+                self._evict(layer_idx)

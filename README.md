@@ -1,6 +1,6 @@
-# heavy-hitter-kv-cache
+# H2O + ForesightKV
 
-A from-scratch implementation of H2O (Heavy Hitter Oracle) KV cache eviction on Microsoft's phi-2.
+H2O (Heavy Hitter Oracle) KV cache eviction extended with ForesightKV pre-seeding, implemented from scratch on Microsoft's phi-2.
 
 Paper: [NeurIPS 2023](https://neurips.cc/virtual/2023/poster/71645) · [arXiv](https://arxiv.org/abs/2306.14048)
 

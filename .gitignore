@@ -5,3 +5,8 @@ venv/
 .DS_Store
 .vscode/
 .idea/
+traces/
+labels.pt
+features.pt
+scorer.pt
+scorer_indomain.pt
