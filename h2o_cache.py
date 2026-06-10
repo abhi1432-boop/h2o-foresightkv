@@ -47,6 +47,17 @@ class H2OCache:
         # consumed by seed_from_prefill(), then no longer needed.
         self._prefill_per_layer = [None] * num_layers
 
+        # Beta decay: controls how much the scorer's prior influences the score
+        # over time. Beta starts high so early eviction decisions trust the prior.
+        # Each decode step beta multiplies by BETA_DECAY, shrinking toward zero.
+        # By step 50 beta ≈ 0.08 — the prior has nearly faded out and the real
+        # attention data is driving eviction decisions on its own.
+        # Only active in foresight mode — standard H2O has no prior to decay.
+        self.beta = 0.9          # starting trust in the scorer's prediction
+        self.beta_decay = 0.95   # multiply beta by this each decode step
+        # store the original predicted scores so we can re-blend each step
+        self._prior_scores = [None] * num_layers
+
         # In foresight mode we defer eviction until after seed_from_prefill() runs.
         # That way the first eviction uses the scorer's predictions, not zeros.
         # For standard H2O this is always True (evict immediately as usual).
@@ -123,6 +134,30 @@ class H2OCache:
                 ])
             # add this step's attention onto the running totals
             self.accumulated_scores[layer_idx] = self.accumulated_scores[layer_idx] + new_scores
+
+            # Beta decay (foresight mode only):
+            # blend the accumulated real attention with the scorer's original prior.
+            # formula: score = β * prior + (1 - β) * accumulated_attention
+            # early on β is high so the prior dominates.
+            # each step β shrinks by 0.95 so real attention gradually takes over.
+            # by step 50 β ≈ 0.08 — the prior has almost completely faded out.
+            if self.use_foresight and self._prior_scores[layer_idx] is not None:
+                prior = self._prior_scores[layer_idx]
+                # prior may be shorter than current cache if tokens were added after seeding
+                # pad it with zeros for any new tokens (they have no prior prediction)
+                if prior.shape[0] < self.accumulated_scores[layer_idx].shape[0]:
+                    pad = torch.zeros(
+                        self.accumulated_scores[layer_idx].shape[0] - prior.shape[0],
+                        device=prior.device
+                    )
+                    prior = torch.cat([prior, pad])
+                    self._prior_scores[layer_idx] = prior
+                self.accumulated_scores[layer_idx] = (
+                    self.beta * prior + (1 - self.beta) * self.accumulated_scores[layer_idx]
+                )
+                # only decay beta on layer 0 to avoid decaying 32 times per step
+                if layer_idx == 0:
+                    self.beta *= self.beta_decay
 
         # if the cache is now bigger than our budget, drop the least-attended tokens
         # (skipped during prefill in foresight mode — see seed_from_prefill)
@@ -238,10 +273,12 @@ class H2OCache:
 
         # Push predicted scores to every layer.  All 32 layers now start from the
         # same importance estimate rather than from zero.
+        # Also save a copy in _prior_scores so beta decay can re-blend each step.
         for layer_idx in range(self.num_layers):
             if self.accumulated_scores[layer_idx] is not None:
                 device = self.accumulated_scores[layer_idx].device
                 self.accumulated_scores[layer_idx] = predicted.to(device).clone()
+                self._prior_scores[layer_idx] = predicted.to(device).clone()
 
         # Now that scores are meaningful, allow eviction going forward and run
         # the first eviction pass (catches any prompt longer than the budget).
