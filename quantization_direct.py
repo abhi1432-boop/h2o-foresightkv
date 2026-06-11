@@ -6,8 +6,8 @@ after the fact), this runs phi-2 with a QuantizedDynamicCache — K and V are qu
 the moment they are stored, so every attention computation uses noisy K/V vectors.
 This is what TurboQuant+ actually does in hardware.
 
-NOTE: requires float32 on MPS — float16 produces NaN during decode steps due to
-Q*K^T overflow. This makes it slow on a Mac GPU; for scale, run on a CUDA device.
+NOTE: requires float32 — float16 produces NaN during decode steps on MPS due to
+Q*K^T overflow. For scale, run on a CUDA device.
 
 Compares against a float32 FP baseline run (not saved traces) so precision is consistent.
 """
@@ -42,7 +42,7 @@ class QuantizedDynamicCache(DynamicCache):
     """DynamicCache that quantizes K and V the moment they are stored.
 
     When phi-2 reads them back for the next attention step it sees noisy values,
-    exactly what happens with TurboQuant+ KV compression in hardware.
+    simulating what happens with compressed KV storage in hardware.
     """
 
     def __init__(self, bits):
@@ -161,5 +161,5 @@ if __name__ == "__main__":
         print(f"{'INT' + str(bits):<16} {avg_r:>18.3f} {avg_agree:>12.3f}")
     print("=" * 58)
     print()
-    print("Direct method: K and V quantized at storage time (matches TurboQuant+ behavior).")
+    print("Direct method: K and V quantized at storage time.")
     print("Compare to quantization_impact.py for the post-softmax approximation.")

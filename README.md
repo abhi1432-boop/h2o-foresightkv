@@ -1,6 +1,6 @@
 # H2O + ForesightKV
 
-H2O (Heavy Hitter Oracle) KV cache eviction extended with ForesightKV pre-seeding and beta decay, implemented on Microsoft phi-2. Also includes quantization impact analysis motivated by TurboQuant+ 3-bit KV compression.
+H2O (Heavy Hitter Oracle) KV cache eviction extended with ForesightKV pre-seeding and beta decay, implemented on Microsoft phi-2. Also includes quantization impact analysis measuring how KV cache compression affects eviction signal quality.
 
 Paper: [NeurIPS 2023](https://neurips.cc/virtual/2023/poster/71645) · [arXiv](https://arxiv.org/abs/2306.14048)
 
@@ -31,11 +31,11 @@ After the prefill step, the Scorer runs once and seeds the accumulator with its 
 
 ## Quantization impact
 
-Motivated by TurboQuant+'s 3-bit KV compression, we measure how much quantizing K and V degrades the eviction signal H2O depends on.
+We measure how much quantizing the KV cache degrades the eviction signal H2O depends on, across INT8, INT4, and INT3 precision.
 
 **quantization_impact.py** — approximation: applies quantization to saved attention weights post-softmax and measures how much the LTC ranking and top-k eviction decisions shift.
 
-**quantization_direct.py** — direct method: re-runs phi-2 with a `QuantizedDynamicCache` that quantizes K and V at storage time (matching TurboQuant+'s actual behavior). Requires float32; float16 produces NaN on MPS during decode steps. For scale, run on a CUDA device.
+**quantization_direct.py** — direct method: re-runs phi-2 with a `QuantizedDynamicCache` that quantizes K and V at storage time, so every attention computation uses noisy K/V vectors. Requires float32; float16 produces NaN on MPS during decode steps. For scale, run on a CUDA device.
 
 Results from the approximation across 30 eval prompts:
 
