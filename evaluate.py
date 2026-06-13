@@ -1,53 +1,60 @@
 """
 Compare baseline H2O vs H2O + ForesightKV on eval prompts.
 
-Conditions:
-  1. H2O baseline   — zero-initialized accumulators (standard H2O)
-  2. H2O + Foresight — seeded with trained scorer predictions
+Runs two evaluations:
+  SHORT — 30 short eval prompts (indices 110-139), budget=8, window=2
+  LONG  — 10 long eval prompts  (indices 140-149), budget=64, window=8
 
-Metrics (per condition, averaged over eval prompts):
+Metrics (per condition, averaged over prompts):
   cold_errors    tokens with LTC > 0.7 evicted within first COLD_WINDOW decode steps
   total_errors   tokens with LTC > 0.7 evicted at any point during generation
   token_match    fraction of generated tokens that match the full-cache reference
-
-Usage:
-  python evaluate.py
 """
 
 import os
+import time
 import torch
 from collections import Counter
 from transformers import AutoTokenizer, AutoModelForCausalLM, DynamicCache
 
-from prompts import TRAIN_PROMPTS, EVAL_PROMPTS
+from prompts import TRAIN_PROMPTS, EVAL_PROMPTS, LONG_PROMPTS
 from h2o_cache import H2OCache
 from patch import H2OCacheAdapter
 from train_scorer import Scorer
 
 LABELS_PATH   = "labels.pt"
-FEATURES_PATH = "features.pt"
 SCORER_PATH   = "scorer.pt"
+TRACE_DIR     = "traces"
 
-MAX_NEW_TOKENS = 50
-COLD_WINDOW    = 50          # "cold start" = first N decode steps
-LTC_THRESHOLD  = 0.7        # tokens above this are considered important
-EVAL_BUDGET    = 8           # aggressive cache budget to stress-test eviction
-EVAL_WINDOW    = 2
+MAX_NEW_TOKENS = 5
+COLD_WINDOW    = 10
+LTC_THRESHOLD  = 0.7
 
-NUM_TRAIN = len(TRAIN_PROMPTS)
+# Short prompt eval settings
+SHORT_BUDGET = 8
+SHORT_WINDOW = 2
+
+# Long prompt eval settings — sequences are ~185 tokens so budget needs to be much bigger
+LONG_BUDGET  = 64
+LONG_WINDOW  = 8
+
+# Number of prompts to evaluate from each set (keep small for speed)
+NUM_SHORT_EVAL = 3
+NUM_LONG_EVAL  = 0
+
+NUM_TRAIN  = len(TRAIN_PROMPTS)
+NUM_SHORT  = len(TRAIN_PROMPTS) + len(EVAL_PROMPTS)
 MODEL_NAME = "microsoft/phi-2"
 
 
-# ---------------------------------------------------------------------------
-# Setup
-# ---------------------------------------------------------------------------
-
-print("Loading model...")
+device = "mps" if torch.backends.mps.is_available() else "cpu"
+print(f"Loading model on {device}...")
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModelForCausalLM.from_pretrained(
-    MODEL_NAME, dtype=torch.float32, attn_implementation="eager"
-)
+    MODEL_NAME, dtype=torch.bfloat16, attn_implementation="eager"
+).to(device)
 model.eval()
+num_layers = len(model.model.layers)
 print("done loading")
 
 
@@ -67,73 +74,58 @@ def build_freq_table(labels):
     return counter
 
 
-# ---------------------------------------------------------------------------
-# Generation helpers
-# ---------------------------------------------------------------------------
-
-def generate_full_cache(prompt):
-    """Run with unlimited cache — this is the reference output."""
-    input_ids = tokenizer(prompt, return_tensors="pt").input_ids
-    generated = input_ids
-    past = DynamicCache()
-    with torch.no_grad():
-        for step in range(MAX_NEW_TOKENS):
-            model_inputs = generated if step == 0 else generated[:, -1:]
-            outputs = model(model_inputs, past_key_values=past, use_cache=True)
-            next_tok = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
-            generated = torch.cat([generated, next_tok], dim=1)
-    return generated[0]
+def get_prompt(idx):
+    if idx < NUM_TRAIN:
+        return TRAIN_PROMPTS[idx]
+    elif idx < NUM_SHORT:
+        return EVAL_PROMPTS[idx - NUM_TRAIN]
+    else:
+        return LONG_PROMPTS[idx - NUM_SHORT]
 
 
-def generate_h2o(prompt, use_foresight, freq_table, scorer):
-    """Run generation with H2O eviction and return (token_ids, H2OCache)."""
-    num_layers = len(model.model.layers)
-    cache = H2OCache(EVAL_BUDGET, EVAL_WINDOW, num_layers, use_foresight=use_foresight)
+def load_ref_ids(prompt_idx):
+    # Reuse the full-cache generation already saved in traces/ — no forward passes needed.
+    # collect_traces.py saved MAX_NEW_TOKENS=50 tokens per prompt; we only compare
+    # up to MAX_NEW_TOKENS of them, so the longer trace is always sufficient.
+    path = os.path.join(TRACE_DIR, f"trace_{prompt_idx:04d}.pt")
+    trace = torch.load(path, weights_only=False)
+    return trace["generated_ids"]  # CPU LongTensor[prompt_len + 50]
+
+
+def generate_h2o(prompt, use_foresight, freq_table, scorer, budget, window):
+    cache   = H2OCache(budget, window, num_layers, use_foresight=use_foresight)
     adapter = H2OCacheAdapter(cache)
 
-    input_ids = tokenizer(prompt, return_tensors="pt").input_ids
+    input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
     generated = input_ids
-    handles = []
 
-    # Register hooks to feed attention weights into H2OCache after each layer.
-    def make_hook(idx):
-        def hook(module, inputs, output):
-            _, attn_weights = output
-            if attn_weights is not None:
-                cache.update_scores(attn_weights, idx)
-            return output
-        return hook
+    with torch.no_grad():
+        for step in range(MAX_NEW_TOKENS):
+            t0 = time.time()
+            model_inputs = generated if step == 0 else generated[:, -1:]
+            outputs = model(model_inputs, past_key_values=adapter, use_cache=True,
+                            output_attentions=True, return_dict=True)
+            # one sync so the GPU fully finishes before we touch output tensors —
+            # without this, each .cpu() in the scores loop forces its own sync (32x slower)
+            if device == "mps":
+                torch.mps.synchronize()
+            t1 = time.time()
 
-    for i, layer in enumerate(model.model.layers):
-        handles.append(layer.self_attn.register_forward_hook(make_hook(i)))
+            for i, attn in enumerate(outputs.attentions):
+                cache.update_scores(attn, i)
+            t2 = time.time()
 
-    try:
-        with torch.no_grad():
-            for step in range(MAX_NEW_TOKENS):
-                model_inputs = generated if step == 0 else generated[:, -1:]
-                outputs = model(model_inputs, past_key_values=adapter, use_cache=True)
+            if step == 0 and use_foresight:
+                cache.seed_from_prefill(input_ids[0].cpu(), freq_table, scorer)
 
-                # After prefill, seed scores with the scorer (foresight only).
-                if step == 0 and use_foresight:
-                    cache.seed_from_prefill(input_ids[0], freq_table, scorer)
+            next_tok = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+            generated = torch.cat([generated, next_tok], dim=1)
+            print(f"      step {step}: fwd={t1-t0:.2f}s  scores={t2-t1:.2f}s", flush=True)
 
-                next_tok = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
-                generated = torch.cat([generated, next_tok], dim=1)
-    finally:
-        for h in handles:
-            h.remove()
+    return generated[0].cpu(), cache
 
-    return generated[0], cache
-
-
-# ---------------------------------------------------------------------------
-# Evaluation loop
-# ---------------------------------------------------------------------------
 
 def measure(generated_ids, ref_ids, h2o_cache, ltc, prompt_len):
-    """Compute the three metrics for one prompt."""
-    # cold_errors: important tokens evicted within the first COLD_WINDOW decode steps
-    # total_errors: important tokens evicted at any decode step
     cold_errors  = 0
     total_errors = 0
     for pos in range(prompt_len):
@@ -141,18 +133,52 @@ def measure(generated_ids, ref_ids, h2o_cache, ltc, prompt_len):
             continue
         step_evicted = h2o_cache.evicted_at_step.get(pos)
         if step_evicted is None:
-            continue                            # never evicted
+            continue
         total_errors += 1
         if step_evicted < COLD_WINDOW:
             cold_errors += 1
 
-    # token_match: how many generated tokens agree with the full-cache reference
     gen_new = generated_ids[prompt_len:].tolist()
     ref_new = ref_ids[prompt_len: prompt_len + len(gen_new)].tolist()
     matches = sum(g == r for g, r in zip(gen_new, ref_new))
     token_match = matches / max(len(gen_new), 1)
 
     return cold_errors, total_errors, token_match
+
+
+def run_eval(indices, label_map, freq_table, scorer, budget, window, label):
+    results = {"baseline": [], "foresight": []}
+
+    for i, idx in enumerate(indices):
+        prompt = get_prompt(idx)
+        rec    = label_map[idx]
+        ltc    = rec["ltc"]
+        prompt_len = rec["prompt_len"]
+
+        print(f"  [{i+1}/{len(indices)}] prompt_idx={idx}  prompt_len={prompt_len}")
+
+        ref_ids = load_ref_ids(idx)
+
+        gen_base, cache_base = generate_h2o(prompt, False, freq_table, scorer, budget, window)
+        cold_b, total_b, match_b = measure(gen_base, ref_ids, cache_base, ltc, prompt_len)
+        results["baseline"].append((cold_b, total_b, match_b))
+
+        gen_fore, cache_fore = generate_h2o(prompt, True, freq_table, scorer, budget, window)
+        cold_f, total_f, match_f = measure(gen_fore, ref_ids, cache_fore, ltc, prompt_len)
+        results["foresight"].append((cold_f, total_f, match_f))
+
+    def avg(rows, col):
+        vals = [r[col] for r in rows]
+        return sum(vals) / max(len(vals), 1)
+
+    print(f"\n{'=' * 62}")
+    print(f"{label}  budget={budget}  window={window}  prompts={len(indices)}")
+    print(f"{'Condition':<20} {'cold_errors':>12} {'total_errors':>13} {'token_match':>12}")
+    print(f"{'-' * 62}")
+    for name, key in [("H2O baseline", "baseline"), ("H2O + ForesightKV", "foresight")]:
+        rows = results[key]
+        print(f"{name:<20} {avg(rows,0):>12.2f} {avg(rows,1):>13.2f} {avg(rows,2):>12.3f}")
+    print(f"{'=' * 62}\n")
 
 
 def main():
@@ -163,61 +189,25 @@ def main():
         print("scorer.pt not found — run train_scorer.py first")
         return
 
-    labels = torch.load(LABELS_PATH, weights_only=False)
+    labels     = torch.load(LABELS_PATH, weights_only=False)
     freq_table = build_freq_table(labels)
-    scorer = load_scorer()
+    scorer     = load_scorer()
+    label_map  = {r["prompt_idx"]: r for r in labels}
 
-    # Build a fast lookup: prompt_idx -> label record
-    label_map = {r["prompt_idx"]: r for r in labels}
+    short_indices = [r["prompt_idx"] for r in labels
+                     if NUM_TRAIN <= r["prompt_idx"] < NUM_SHORT][:NUM_SHORT_EVAL]
+    long_indices  = [r["prompt_idx"] for r in labels
+                     if r["prompt_idx"] >= NUM_SHORT][:NUM_LONG_EVAL]
 
-    # Eval prompts are indices NUM_TRAIN onward
-    eval_indices = [r["prompt_idx"] for r in labels if r["prompt_idx"] >= NUM_TRAIN]
-    if not eval_indices:
-        print("No eval prompts found in labels.pt")
-        return
+    if short_indices:
+        print(f"\nEvaluating SHORT prompts ({len(short_indices)} prompts)...")
+        run_eval(short_indices, label_map, freq_table, scorer,
+                 SHORT_BUDGET, SHORT_WINDOW, "SHORT EVAL")
 
-    results = {"baseline": [], "foresight": []}
-
-    for i, idx in enumerate(eval_indices):
-        prompt = EVAL_PROMPTS[idx - NUM_TRAIN]
-        rec = label_map[idx]
-        ltc = rec["ltc"]
-        prompt_len = rec["prompt_len"]
-
-        print(f"[{i+1}/{len(eval_indices)}] prompt_idx={idx}  prompt_len={prompt_len}")
-
-        # Reference generation (full cache)
-        ref_ids = generate_full_cache(prompt)
-
-        # Baseline H2O
-        gen_base, cache_base = generate_h2o(prompt, use_foresight=False,
-                                             freq_table=freq_table, scorer=scorer)
-        cold_b, total_b, match_b = measure(gen_base, ref_ids, cache_base, ltc, prompt_len)
-        results["baseline"].append((cold_b, total_b, match_b))
-
-        # H2O + ForesightKV
-        gen_fore, cache_fore = generate_h2o(prompt, use_foresight=True,
-                                             freq_table=freq_table, scorer=scorer)
-        cold_f, total_f, match_f = measure(gen_fore, ref_ids, cache_fore, ltc, prompt_len)
-        results["foresight"].append((cold_f, total_f, match_f))
-
-    # Aggregate
-    def avg(rows, col):
-        vals = [r[col] for r in rows]
-        return sum(vals) / max(len(vals), 1)
-
-    print("\n" + "=" * 62)
-    print(f"{'Condition':<20} {'cold_errors':>12} {'total_errors':>13} {'token_match':>12}")
-    print("-" * 62)
-    for name, key in [("H2O baseline", "baseline"), ("H2O + ForesightKV", "foresight")]:
-        rows = results[key]
-        print(
-            f"{name:<20} {avg(rows,0):>12.2f} {avg(rows,1):>13.2f} {avg(rows,2):>12.3f}"
-        )
-    print("=" * 62)
-    print(f"\ncache budget={EVAL_BUDGET}  window={EVAL_WINDOW}  "
-          f"LTC_threshold={LTC_THRESHOLD}  cold_window={COLD_WINDOW}  "
-          f"prompts={len(eval_indices)}")
+    if long_indices:
+        print(f"\nEvaluating LONG prompts ({len(long_indices)} prompts)...")
+        run_eval(long_indices, label_map, freq_table, scorer,
+                 LONG_BUDGET, LONG_WINDOW, "LONG EVAL")
 
 
 if __name__ == "__main__":

@@ -22,13 +22,14 @@ import os
 import math
 import torch
 from collections import Counter
-from prompts import TRAIN_PROMPTS, EVAL_PROMPTS
+from prompts import TRAIN_PROMPTS, EVAL_PROMPTS, LONG_PROMPTS
 
 TRACE_DIR = "traces"
 LABELS_PATH = "labels.pt"
 OUT_PATH = "features.pt"
 
 NUM_TRAIN = len(TRAIN_PROMPTS)
+NUM_SHORT = len(TRAIN_PROMPTS) + len(EVAL_PROMPTS)
 
 
 def build_freq_table(labels):
@@ -86,7 +87,7 @@ def main():
 
         trace = torch.load(path, weights_only=False)
         feats = extract_features(trace, rec, freq_table, max_count)
-        split = "train" if idx < NUM_TRAIN else "eval"
+        split = "train" if idx < NUM_TRAIN else ("long" if idx >= NUM_SHORT else "eval")
         records.append({
             "prompt_idx": idx,
             "split": split,

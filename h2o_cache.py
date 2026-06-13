@@ -107,7 +107,9 @@ class H2OCache:
         # For each key, we want one number: total attention received this step.
         # We sum across heads (all 32 of them) AND across queries (every asker).
         # .detach() makes sure we're not accidentally tracking gradients.
-        new_scores = attn_weights[0].sum(dim=(0, 1)).detach()  # shape: [key_len]
+        # move to CPU immediately: score math is on tiny tensors (budget-sized),
+        # CPU is faster than MPS for these and avoids per-layer GPU sync overhead
+        new_scores = attn_weights[0].sum(dim=(0, 1)).detach().cpu()  # shape: [key_len]
 
         if self.accumulated_scores[layer_idx] is None:
             if self.use_foresight:
@@ -213,10 +215,15 @@ class H2OCache:
             self._layer0_positions = [self._layer0_positions[i] for i in keep.tolist()]
 
         # slice the cache and scores down to only the kept positions
-        # everything not in `keep` is silently dropped — its K, V, and score are gone
-        self.key_cache[layer_idx] = self.key_cache[layer_idx][:, :, keep, :]
-        self.value_cache[layer_idx] = self.value_cache[layer_idx][:, :, keep, :]
-        self.accumulated_scores[layer_idx] = scores[keep]
+        # scores/prior live on CPU; key_cache/value_cache live on the model device (MPS/CPU)
+        # move keep to the KV device only for the KV indexing, keep it on CPU for scores
+        kv_device = self.key_cache[layer_idx].device
+        keep_kv = keep if kv_device.type == "cpu" else keep.to(kv_device)
+        self.key_cache[layer_idx] = torch.index_select(self.key_cache[layer_idx], 2, keep_kv)
+        self.value_cache[layer_idx] = torch.index_select(self.value_cache[layer_idx], 2, keep_kv)
+        self.accumulated_scores[layer_idx] = scores[keep]   # CPU indexing, no GPU sync
+        if self._prior_scores[layer_idx] is not None:
+            self._prior_scores[layer_idx] = self._prior_scores[layer_idx][keep]  # CPU
 
     def seed_from_prefill(self, input_ids, freq_table, scorer_model):
         """Replace zero-initialized scores with scorer predictions.
@@ -238,8 +245,9 @@ class H2OCache:
 
         # Build [num_layers, prompt_len] prefill attention matrix from the stored
         # per-layer sums that update_scores() saved during step 0.
+        # move to CPU: scorer and feature math run on CPU regardless of device
         prefill = torch.stack([
-            self._prefill_per_layer[l] if self._prefill_per_layer[l] is not None
+            self._prefill_per_layer[l].cpu() if self._prefill_per_layer[l] is not None
             else torch.zeros(prompt_len)
             for l in range(num_layers)
         ])  # [L, prompt_len]

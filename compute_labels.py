@@ -17,7 +17,7 @@ Output: labels.pt — list of dicts, one per prompt:
 
 import os
 import torch
-from prompts import TRAIN_PROMPTS, EVAL_PROMPTS
+from prompts import TRAIN_PROMPTS, EVAL_PROMPTS, LONG_PROMPTS
 
 TRACE_DIR = "traces"
 OUT_PATH = "labels.pt"
@@ -42,7 +42,7 @@ def compute_ltc(trace):
 
 
 def main():
-    all_prompts = TRAIN_PROMPTS + EVAL_PROMPTS
+    all_prompts = TRAIN_PROMPTS + EVAL_PROMPTS + LONG_PROMPTS
     records = []
     missing = 0
 
