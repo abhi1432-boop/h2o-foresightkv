@@ -52,7 +52,9 @@ device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is
 print(f"Loading {MODEL_NAME} on {device}...")
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModelForCausalLM.from_pretrained(
-    MODEL_NAME, dtype=torch.float32, attn_implementation="eager"
+    MODEL_NAME,
+    torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
+    attn_implementation="eager"
 ).to(device)
 model.eval()
 head_dim = model.config.hidden_size // model.config.num_attention_heads
