@@ -20,17 +20,19 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, DynamicCache
 from prompts import TRAIN_PROMPTS, EVAL_PROMPTS, LONG_PROMPTS
 
-MAX_NEW_TOKENS = 50
+MAX_NEW_TOKENS = 200
 MODEL_NAME = "microsoft/phi-2"
 TRACE_DIR  = "traces"
 
 os.makedirs(TRACE_DIR, exist_ok=True)
 
-device = "mps" if torch.backends.mps.is_available() else "cpu"
+device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 print(f"Loading model on {device}...")
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModelForCausalLM.from_pretrained(
-    MODEL_NAME, dtype=torch.float32, attn_implementation="eager"
+    MODEL_NAME,
+    torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
+    attn_implementation="eager"
 ).to(device)
 model.eval()
 
