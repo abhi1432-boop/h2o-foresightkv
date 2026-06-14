@@ -48,7 +48,7 @@ NUM_PROMPTS    = 5      # scale up for more meaningful averages
 TOKEN_BUDGET   = 64     # H2O keep budget (how many tokens survive) for agreement
 
 
-device = "mps" if torch.backends.mps.is_available() else "cpu"
+device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 print(f"Loading {MODEL_NAME} on {device}...")
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModelForCausalLM.from_pretrained(
