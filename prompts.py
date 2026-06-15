@@ -264,6 +264,46 @@ _FACTUAL_LONG = [
     "Describe the difference between prokaryotic and eukaryotic cells.",
     "Explain what causes the northern lights.",
     "Describe how the circulatory system transports oxygen throughout the body.",
+    "Explain what a chemical bond is and describe the difference between ionic and covalent bonds.",
+    "Describe how the digestive system breaks down food from mouth to absorption.",
+    "Explain what dark matter is and why scientists believe it exists.",
+    "Describe how a jet engine produces thrust.",
+    "Explain the difference between AC and DC electricity.",
+    "Describe how the internet was created and what problem it was designed to solve.",
+    "Explain what mitosis is and why cells need to divide.",
+    "Describe how oil is formed underground and how it is extracted.",
+    "Explain what a virus is and how it differs from a bacterium.",
+    "Describe how the stock market works at a basic level.",
+    "Explain what happened during the Big Bang and what evidence supports it.",
+    "Describe how the human ear converts sound waves into electrical signals.",
+    "Explain what a ecosystem food chain is and why removing one species matters.",
+    "Describe how concrete is made and why it is so widely used in construction.",
+    "Explain what causes ocean currents and why they matter for climate.",
+    "Describe how a nuclear power plant generates electricity.",
+    "Explain what CRISPR is and how it can edit genes.",
+    "Describe the causes and effects of the Great Depression.",
+    "Explain how solar panels convert sunlight into electricity.",
+    "Describe what happens to the body during sleep and why it is essential.",
+    "Explain what inflation is and what causes it to rise or fall.",
+    "Describe how the lymphatic system supports the immune system.",
+    "Explain what a transistor is and why it was revolutionary for computing.",
+    "Describe how mountains form over geological time.",
+    "Explain what quantum mechanics means and give one example of a quantum effect.",
+    "Describe how the printing press changed the spread of information in history.",
+    "Explain what synapses are and how neurons communicate with each other.",
+    "Describe how satellites stay in orbit without falling back to Earth.",
+    "Explain what fermentation is and give two examples of it in everyday food.",
+    "Describe how the ozone layer protects life on Earth and what threatens it.",
+    "Explain what a hypothesis is and how it differs from a theory in science.",
+    "Describe how optical fibers transmit data using light.",
+    "Explain what plate boundaries are and describe three types.",
+    "Describe how the immune system responds when you get a cut.",
+    "Explain what happens chemically when wood burns.",
+    "Describe how a democracy differs from an autocracy.",
+    "Explain what the placebo effect is and why it matters in medical research.",
+    "Describe how GPS satellites work together to pinpoint a location on Earth.",
+    "Explain what a algorithm is and describe how sorting algorithms work in general.",
+    "Describe how the human skeleton supports the body and enables movement.",
 ]
 
 _INSTRUCTIONS = [
@@ -341,10 +381,10 @@ def _format(prompts):
     return [f"Instruct: {p}\nOutput:" for p in prompts]
 
 
-# 280 total; split 224 train, 56 eval. Held-out prompts never used for labelling.
+# 320 total; split 256 train, 64 eval. Held-out prompts never used for labelling.
 ALL_PROMPTS = _format(_ALL)
-TRAIN_PROMPTS = ALL_PROMPTS[:224]
-EVAL_PROMPTS = ALL_PROMPTS[224:]
+TRAIN_PROMPTS = ALL_PROMPTS[:256]
+EVAL_PROMPTS = ALL_PROMPTS[256:]
 
 # Long prompts for cache pressure experiments. Indices start at 140.
 LONG_PROMPTS = _format(_LONG)
