@@ -133,9 +133,10 @@ def main():
     torch.save({"model_state": model.state_dict()}, MODEL_OUT)
     print(f"Model saved to {MODEL_OUT}")
     export_fixed_point(model, WEIGHTS_OUT, bits=FIXED_POINT_BITS)
+    return corr
 
 
-def train_within_domain():
+def train_within_domain(cross_domain_r):
     """Train and test on Factual-Long only (indices 100-119).
 
     Training: prompts 100-109 (in the original train split)
@@ -202,7 +203,7 @@ def train_within_domain():
 
     torch.save({"model_state": model.state_dict()}, "scorer_indomain.pt")
     print(f"Within-domain scorer saved to scorer_indomain.pt")
-    print(f"\nCross-domain r (from main run): -0.507")
+    print(f"\nCross-domain r (from main run): {cross_domain_r:.3f}")
     print(f"Within-domain r (Factual-Long): {corr:.3f}")
     if corr > 0:
         print("→ Positive within-domain: architecture works, data is the bottleneck")
@@ -211,5 +212,5 @@ def train_within_domain():
 
 
 if __name__ == "__main__":
-    main()
-    train_within_domain()
+    cross_r = main()
+    train_within_domain(cross_r)
