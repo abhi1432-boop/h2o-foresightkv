@@ -19,10 +19,11 @@ FEATURES_PATH = "features.pt"
 MODEL_OUT = "scorer.pt"
 WEIGHTS_OUT = "scorer_weights.py"
 
-EPOCHS = 40
+EPOCHS = 200
 LR = 1e-3
 BATCH_SIZE = 512
 FIXED_POINT_BITS = 8
+RANK_LOSS_WEIGHT = 0.3  # fraction of loss from pairwise ranking
 
 
 class TokenDataset(Dataset):
@@ -111,19 +112,30 @@ def main():
 
     model = Scorer()
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
-    loss_fn = nn.MSELoss()
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-5)
+    mse_fn  = nn.MSELoss()
+    rank_fn = nn.MarginRankingLoss(margin=0.05)
 
     for epoch in range(1, EPOCHS + 1):
         model.train()
         total_loss = 0.0
         for x, y in train_loader:
             optimizer.zero_grad()
-            loss = loss_fn(model(x), y)
+            pred = model(x)
+            loss = mse_fn(pred, y)
+            # pairwise ranking loss: split batch in half, penalise wrong orderings
+            if x.shape[0] >= 4:
+                mid = x.shape[0] // 2
+                pa, pb = pred[:mid], pred[mid:2*mid]
+                ya, yb = y[:mid],    y[mid:2*mid]
+                target = (ya - yb).sign()
+                loss = loss + RANK_LOSS_WEIGHT * rank_fn(pa, pb, target)
             loss.backward()
             optimizer.step()
             total_loss += loss.item() * x.shape[0]
+        scheduler.step()
 
-        if epoch % 10 == 0 or epoch == EPOCHS:
+        if epoch % 20 == 0 or epoch == EPOCHS:
             mse, corr, overlap = evaluate(model, eval_loader)
             print(
                 f"epoch {epoch:3d}  train_loss={total_loss/len(train_ds):.4f}  "
@@ -182,19 +194,29 @@ def train_within_domain(cross_domain_r):
 
     model     = Scorer()
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
-    loss_fn   = nn.MSELoss()
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-5)
+    mse_fn  = nn.MSELoss()
+    rank_fn = nn.MarginRankingLoss(margin=0.05)
 
     for epoch in range(1, EPOCHS + 1):
         model.train()
         total_loss = 0.0
         for x, y in train_loader:
             optimizer.zero_grad()
-            loss = loss_fn(model(x), y)
+            pred = model(x)
+            loss = mse_fn(pred, y)
+            if x.shape[0] >= 4:
+                mid = x.shape[0] // 2
+                pa, pb = pred[:mid], pred[mid:2*mid]
+                ya, yb = y[:mid],    y[mid:2*mid]
+                target = (ya - yb).sign()
+                loss = loss + RANK_LOSS_WEIGHT * rank_fn(pa, pb, target)
             loss.backward()
             optimizer.step()
             total_loss += loss.item() * x.shape[0]
+        scheduler.step()
 
-        if epoch % 10 == 0 or epoch == EPOCHS:
+        if epoch % 20 == 0 or epoch == EPOCHS:
             mse, corr, overlap = evaluate(model, eval_loader)
             print(
                 f"epoch {epoch:3d}  train_loss={total_loss/len(train_ds):.4f}  "

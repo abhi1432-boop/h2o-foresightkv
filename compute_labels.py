@@ -1,18 +1,19 @@
 """
 Compute Long-Term Contribution (LTC) labels from saved traces.
 
-LTC for prompt token p = total attention received from ALL decode steps (t >= 1),
-summed across every layer. The prefill step (t=0) is excluded — that attention is
-concurrent, not future. Only post-prefill attention counts as "future."
+LTC is computed at four decode horizons (50, 100, 150, 200 steps), normalized
+within each horizon, then averaged. This gives a more robust label than a single
+horizon — a token that matters at EVERY horizon is more reliably important than
+one that only matters at step 200.
 
-LTC is then normalized to [0, 1] within each prompt.
+The prefill step (t=0) is excluded — that attention is concurrent, not future.
 
 Output: labels.pt — list of dicts, one per prompt:
   prompt_idx  int
   prompt_len  int
   input_ids   LongTensor[prompt_len]
-  ltc         FloatTensor[prompt_len]   normalized
-  ltc_raw     FloatTensor[prompt_len]   raw sums
+  ltc         FloatTensor[prompt_len]   multi-horizon average, normalized
+  ltc_raw     FloatTensor[prompt_len]   raw sum over all decode steps
 """
 
 import os
@@ -23,21 +24,35 @@ TRACE_DIR = "traces"
 OUT_PATH = "labels.pt"
 
 
+HORIZONS = [50, 100, 150, 200]
+
+
 def compute_ltc(trace):
     prompt_len = trace["prompt_len"]
     step_attns = trace["step_attns"]  # list of [num_layers, cache_len]
 
-    ltc_raw = torch.zeros(prompt_len)
+    # accumulate attention incrementally so each horizon costs O(1) extra
+    running = torch.zeros(prompt_len)
+    snapshots = {}  # horizon → cumulative raw at that step
 
     for t, stack in enumerate(step_attns):
         if t == 0:
-            continue  # skip prefill — not "future"
-        # stack: [num_layers, cache_len]  where cache_len = prompt_len + t
-        per_token = stack.sum(dim=0)          # sum over layers → [cache_len]
-        ltc_raw += per_token[:prompt_len]     # only original prompt positions
+            continue  # skip prefill
+        running += stack.sum(dim=0)[:prompt_len]
+        if t in HORIZONS:
+            snapshots[t] = running.clone()
 
-    lo, hi = ltc_raw.min(), ltc_raw.max()
-    ltc = (ltc_raw - lo) / (hi - lo) if hi > lo else torch.zeros_like(ltc_raw)
+    ltc_raw = running.clone()
+
+    def normalize(v):
+        lo, hi = v.min(), v.max()
+        return (v - lo) / (hi - lo) if hi > lo else torch.zeros_like(v)
+
+    # average normalized LTC across all horizons (use last available if trace is short)
+    last = normalize(ltc_raw)
+    normalized = [normalize(snapshots.get(h, ltc_raw)) for h in HORIZONS]
+    ltc = torch.stack(normalized).mean(dim=0)
+
     return ltc_raw, ltc
 
 
