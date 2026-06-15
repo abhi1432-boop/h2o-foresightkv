@@ -7,9 +7,9 @@ Feature index | Name              | Description
 ------------- | ----------------- | -------------------------------------------
 0             | normalized_pos    | p / (prompt_len - 1)
 1             | is_sink           | 1 if position < 5 (sink token signal)
-2             | token_freq        | log-normalized frequency in training corpus
-3             | prefill_attn      | attention received during prefill, summed over all heads and layers, then normalized within prompt
-4             | layer_depth       | weighted mean layer index of prefill attention, normalized to [0,1]. Tokens that are mostly attended to in later layers score high.
+2             | late_layer_attn   | attention from top 1/3 of layers at prefill, normalized. Later layers = semantic signal.
+3             | early_layer_attn  | attention from bottom 1/3 of layers at prefill, normalized. Contrast with late-layer.
+4             | layer_consistency | 1 / (1 + CV) where CV = std/mean across layers. High = token gets attention uniformly at all depths.
 
 Output: features.pt — list of dicts, one per prompt:
   prompt_idx  int
@@ -19,9 +19,7 @@ Output: features.pt — list of dicts, one per prompt:
 """
 
 import os
-import math
 import torch
-from collections import Counter
 from prompts import TRAIN_PROMPTS, EVAL_PROMPTS, LONG_PROMPTS
 
 TRACE_DIR = "traces"
@@ -32,48 +30,40 @@ NUM_TRAIN = len(TRAIN_PROMPTS)
 NUM_SHORT = len(TRAIN_PROMPTS) + len(EVAL_PROMPTS)
 
 
-def build_freq_table(labels):
-    counter = Counter()
-    for rec in labels:
-        if rec["prompt_idx"] < NUM_TRAIN:
-            counter.update(rec["input_ids"].tolist())
-    return counter
-
-
-def extract_features(trace, label_rec, freq_table, max_count):
+def extract_features(trace, label_rec):
     prompt_len = trace["prompt_len"]
-    input_ids = trace["input_ids"][:prompt_len]
     prefill = trace["step_attns"][0]          # [num_layers, prompt_len]
     num_layers = prefill.shape[0]
 
-    # Feature 3: total prefill attention per token (summed over all layers)
-    total_prefill = prefill.sum(dim=0)        # [prompt_len]
-    pf_sum = total_prefill.sum()
-    pf_norm = total_prefill / pf_sum if pf_sum > 0 else torch.ones(prompt_len) / prompt_len
+    third = max(num_layers // 3, 1)
+    early = prefill[:third].sum(dim=0)                  # [prompt_len] bottom third of layers
+    late  = prefill[num_layers - third:].sum(dim=0)     # [prompt_len] top third of layers
 
-    # Feature 4: weighted mean layer index → which layers attend to this token
-    layer_idx_col = torch.arange(num_layers, dtype=torch.float32).unsqueeze(1)  # [L, 1]
-    layer_sum = prefill.sum(dim=0).clamp(min=1e-9)   # [prompt_len]
-    weighted = (layer_idx_col * prefill).sum(dim=0) / layer_sum  # [prompt_len]
-    layer_depth = weighted / max(num_layers - 1, 1)              # [0, 1]
+    def norm(v):
+        s = v.sum()
+        return v / s if s > 0 else torch.ones_like(v) / len(v)
+
+    early_norm = norm(early)
+    late_norm  = norm(late)
+
+    # layer_consistency: tokens with stable attention across all depths score high
+    layer_mean = prefill.mean(dim=0).clamp(min=1e-9)
+    layer_std  = prefill.std(dim=0)
+    consistency = 1.0 / (1.0 + layer_std / layer_mean)  # [0, 1]
 
     feats = torch.zeros(prompt_len, 5)
     for p in range(prompt_len):
         feats[p, 0] = p / max(prompt_len - 1, 1)
         feats[p, 1] = 1.0 if p < 5 else 0.0
-        tid = input_ids[p].item()
-        count = freq_table.get(tid, 0)
-        feats[p, 2] = math.log1p(count) / math.log1p(max_count) if max_count > 0 else 0.0
-        feats[p, 3] = pf_norm[p].item()
-        feats[p, 4] = layer_depth[p].item()
+        feats[p, 2] = late_norm[p].item()
+        feats[p, 3] = early_norm[p].item()
+        feats[p, 4] = consistency[p].item()
 
     return feats
 
 
 def main():
     labels = torch.load(LABELS_PATH, weights_only=False)
-    freq_table = build_freq_table(labels)
-    max_count = max(freq_table.values()) if freq_table else 1
 
     records = []
     missing = 0
@@ -86,7 +76,7 @@ def main():
             continue
 
         trace = torch.load(path, weights_only=False)
-        feats = extract_features(trace, rec, freq_table, max_count)
+        feats = extract_features(trace, rec)
         split = "train" if idx < NUM_TRAIN else ("long" if idx >= NUM_SHORT else "eval")
         records.append({
             "prompt_idx": idx,
