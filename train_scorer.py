@@ -158,8 +158,8 @@ def train_within_domain(cross_domain_r):
     it proves the architecture is sound and the issue is purely training data.
     Saves the within-domain scorer to scorer_indomain.pt.
     """
-    FACTUAL_TRAIN = set(range(100, 110))
-    FACTUAL_EVAL  = set(range(110, 120))
+    FACTUAL_TRAIN = set(range(200, 212))
+    FACTUAL_EVAL  = set(range(224, 236))
 
     records = torch.load(FEATURES_PATH, weights_only=False)
 

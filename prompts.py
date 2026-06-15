@@ -29,6 +29,26 @@ _QA = [
     "Name the seven continents.",
     "What gas do plants absorb during photosynthesis?",
     "In which country is the city of Cairo located?",
+    "What is the chemical formula for water?",
+    "Who invented the printing press?",
+    "What is the longest river in the world?",
+    "In what year did the first moon landing occur?",
+    "What is the atomic number of carbon?",
+    "Who wrote Romeo and Juliet?",
+    "What is the hardest natural substance on Earth?",
+    "How many bones are in the adult human body?",
+    "What is the powerhouse of the cell?",
+    "Which country has the largest population?",
+    "What is the capital of Australia?",
+    "Who was the first President of the United States?",
+    "What is the freezing point of water in Fahrenheit?",
+    "How many sides does a hexagon have?",
+    "What planet is known as the Red Planet?",
+    "Who discovered penicillin?",
+    "What is the square root of 144?",
+    "How many chambers does the human heart have?",
+    "What is the largest ocean on Earth?",
+    "Which gas is most abundant in Earth's atmosphere?",
 ]
 
 _REASONING = [
@@ -52,6 +72,26 @@ _REASONING = [
     "A clock shows 3:15. What is the angle between the hour and minute hands?",
     "Three friends split a $30 bill, paying $10 each. The waiter returns $5, keeps $2, gives back $1 to each. Where is the missing dollar?",
     "If a hen and a half lay an egg and a half in a day and a half, how many eggs do six hens lay in six days?",
+    "A snail climbs 3 feet up a wall during the day and slides 2 feet back at night. How many days to climb 10 feet?",
+    "You have two ropes that each burn in exactly one hour but not uniformly. How do you measure 45 minutes?",
+    "What is the next number in the sequence: 2, 6, 12, 20, 30?",
+    "A frog is at the bottom of a 20-foot well. Each day it climbs 4 feet and slides back 2 feet at night. How many days to escape?",
+    "If 3 cats catch 3 mice in 3 minutes, how many cats are needed to catch 100 mice in 100 minutes?",
+    "How many trailing zeros does 100 factorial have?",
+    "A ship's ladder has rungs 30cm apart. At low tide 3 rungs are visible. The tide rises 90cm. How many rungs are visible?",
+    "How many times do clock hands overlap in a 12-hour period?",
+    "How many 3-digit palindrome numbers exist?",
+    "You are in a room with two doors, one to freedom and one to death. Two guards know which. One always lies, one always tells truth. What single question do you ask?",
+    "Three switches outside a room control three lightbulbs inside. You can enter only once. How do you find which switch controls which bulb?",
+    "If you fold a piece of paper in half 42 times, how thick is it roughly compared to the distance to the moon?",
+    "A ball is dropped from 10 meters and bounces back to half its height each time. What is the total distance traveled?",
+    "You have 12 balls, one slightly heavier. With a balance scale and 3 weighings, how do you find the heavy one?",
+    "If the probability of rain on any given day is 0.3 and days are independent, what is the probability of no rain in a week?",
+    "A store sells 3 items for $1. You need 100 items. How many dollars do you spend?",
+    "What is the sum of all integers from 1 to 100?",
+    "A rectangle has a perimeter of 40 and an area of 96. What are its dimensions?",
+    "If you have 8 coins and one is counterfeit and lighter, how many balance weighings do you need to guarantee finding it?",
+    "Two candles of equal length are lit at the same time. One burns in 4 hours, the other in 6 hours. When is one twice the length of the other?",
 ]
 
 _CONVERSATIONAL = [
@@ -75,6 +115,26 @@ _CONVERSATIONAL = [
     "What's the best way to celebrate a birthday?",
     "Share a tip for cooking a simple but tasty dinner.",
     "How would you describe the sound of rain to someone who has never heard it?",
+    "How would you describe the smell of rain to someone who has never experienced it?",
+    "What is something small that consistently makes your day better?",
+    "How do you stay patient when things keep going wrong?",
+    "What does home mean to you beyond just a place to live?",
+    "Describe the feeling of learning something new for the very first time.",
+    "What is the best way to apologize to someone you have genuinely hurt?",
+    "How do you decide when to give advice and when to simply listen?",
+    "What makes a conversation feel meaningful rather than just small talk?",
+    "Describe the feeling of finishing something you almost gave up on.",
+    "How would you explain curiosity to a young child?",
+    "How do you handle a day when nothing seems to go right no matter what you try?",
+    "What does success look like to you in ordinary everyday life?",
+    "What is the hardest part about making a truly big decision?",
+    "How would you describe the satisfaction of helping a complete stranger?",
+    "What is something you do differently now compared to five years ago and why?",
+    "How do you know when you have worked hard enough on something?",
+    "Describe what trust feels like inside a close friendship.",
+    "What is something you think every person should experience at least once in life?",
+    "How would you explain loneliness to someone who has never felt it?",
+    "Describe what it feels like to be somewhere that makes you feel completely safe.",
 ]
 
 _CODE = [
@@ -98,6 +158,26 @@ _CODE = [
     "Show how to use map and filter in Python.",
     "Write a Python function that checks if a string is a palindrome.",
     "Show me how to define a class with an init method in Python.",
+    "Write a Python function that merges two sorted lists into one sorted list.",
+    "Show me how to use Python decorators with a simple timing example.",
+    "Write a Python function that implements binary search on a sorted list.",
+    "Demonstrate how to use Python generators with a simple example.",
+    "Write a Python function that implements a stack using a list.",
+    "Show me how to use Python's defaultdict with a word frequency counter.",
+    "Write a Python function that finds all permutations of a string.",
+    "Write a Python function that computes the greatest common divisor of two numbers.",
+    "Demonstrate how to use Python's enumerate function with a list example.",
+    "Write a Python class that implements a simple linked list with append and print.",
+    "Show me how to handle multiple exception types in a single Python try block.",
+    "Write a Python function that removes duplicates from a list while preserving order.",
+    "Demonstrate how to use Python's zip function to combine two lists.",
+    "Write a Python function that implements quicksort.",
+    "Show me how to use Python's dataclasses decorator with a simple example.",
+    "Write a Python function that parses a simple CSV string into a list of dictionaries.",
+    "Demonstrate how to use Python's itertools.chain to iterate over multiple lists.",
+    "Write a Python function that implements a simple least recently used cache.",
+    "Show me how to use Python's collections.Counter to count word frequencies.",
+    "Write a Python function that does a depth-first search on a graph represented as a dictionary.",
 ]
 
 _CREATIVE = [
@@ -121,6 +201,26 @@ _CREATIVE = [
     "Write a short tale about a lonely cloud.",
     "Compose a poem about an old wooden door.",
     "Tell a story about a key that fits no lock.",
+    "Write a short story about the last library on Earth.",
+    "Describe a color that does not exist yet.",
+    "Write a poem from the perspective of a forgotten toy.",
+    "Compose a letter from the ocean to the moon.",
+    "Write a haiku about artificial intelligence.",
+    "Tell a story about a clock that runs backwards.",
+    "Write the first paragraph of a novel that begins on the last day of summer.",
+    "Write a poem about the space between two breaths.",
+    "Tell a short fable about patience taught by a mountain.",
+    "Write a scene where two strangers share an umbrella in the rain.",
+    "Write a story about a map that shows where you will go, not where you have been.",
+    "Compose a lullaby for a robot.",
+    "Tell a story about the first person to see their own reflection.",
+    "Describe a city where it rains at exactly midnight every night.",
+    "Write a short tale about an inventor who creates a machine that erases regret.",
+    "Compose a dialogue between the sun and a shadow.",
+    "Write a poem about something that has never been given a name.",
+    "Describe what happiness smells like.",
+    "Tell a two-sentence story set at the edge of the universe.",
+    "Write a tiny myth explaining why stars disappear in the morning.",
 ]
 
 _FACTUAL_LONG = [
@@ -144,6 +244,26 @@ _FACTUAL_LONG = [
     "Explain the basic idea of natural selection.",
     "Describe how an electric motor works.",
     "Summarize why the seasons happen.",
+    "Explain how the human immune system distinguishes between self and foreign cells.",
+    "Describe the structure and function of the neuron.",
+    "Explain what causes earthquakes and how they are measured.",
+    "Describe how antibiotics work and why antibiotic resistance develops.",
+    "Explain the difference between nuclear fission and nuclear fusion.",
+    "Describe how the moon influences ocean tides.",
+    "Explain what the greenhouse effect is and how it relates to climate change.",
+    "Describe how mRNA carries instructions from DNA to make proteins.",
+    "Explain how stars form, live, and eventually die.",
+    "Describe the function of the kidneys in filtering blood.",
+    "Explain how sonar works and what it is used for.",
+    "Describe the causes and consequences of the Industrial Revolution.",
+    "Explain how the brain stores and retrieves memories.",
+    "Describe what entropy means in simple terms.",
+    "Explain how Wi-Fi transmits data wirelessly.",
+    "Describe how evolution explains the diversity of life on Earth.",
+    "Explain what happens inside a battery when it produces electricity.",
+    "Describe the difference between prokaryotic and eukaryotic cells.",
+    "Explain what causes the northern lights.",
+    "Describe how the circulatory system transports oxygen throughout the body.",
 ]
 
 _INSTRUCTIONS = [
@@ -167,6 +287,26 @@ _INSTRUCTIONS = [
     "Outline a five-minute morning stretching routine.",
     "List five tips for staying motivated.",
     "Give step by step instructions for ironing a shirt.",
+    "List five strategies for managing time more effectively during the week.",
+    "Give step by step instructions for making a simple pasta dish from scratch.",
+    "Outline how to prepare for a long-distance road trip.",
+    "List five ways to reduce screen time before bed.",
+    "Give a checklist for organizing a cluttered room.",
+    "Outline the steps to learn a new skill on your own.",
+    "List five tips for giving a confident public presentation.",
+    "Give step by step instructions for starting a daily journaling habit.",
+    "Outline how to write a clear and concise paragraph.",
+    "List five ways to make working from home more productive.",
+    "Give a checklist for starting a small vegetable garden.",
+    "Outline the steps to safely lift heavy objects without injury.",
+    "List five habits that improve mental focus and concentration.",
+    "Give step by step instructions for backing up files on a computer.",
+    "Outline how to have a difficult conversation with someone respectfully.",
+    "List five ways to save money on groceries each week.",
+    "Give step by step instructions for cleaning a bicycle chain.",
+    "Outline a simple evening routine that helps you wind down.",
+    "List five tips for reading more books consistently.",
+    "Give a checklist for hosting a simple dinner party at home.",
 ]
 
 _ALL = _QA + _REASONING + _CONVERSATIONAL + _CODE + _CREATIVE + _FACTUAL_LONG + _INSTRUCTIONS
@@ -201,10 +341,10 @@ def _format(prompts):
     return [f"Instruct: {p}\nOutput:" for p in prompts]
 
 
-# 140 total; split 110 train, 30 eval. Held-out prompts never used for labelling.
+# 280 total; split 224 train, 56 eval. Held-out prompts never used for labelling.
 ALL_PROMPTS = _format(_ALL)
-TRAIN_PROMPTS = ALL_PROMPTS[:110]
-EVAL_PROMPTS = ALL_PROMPTS[110:]
+TRAIN_PROMPTS = ALL_PROMPTS[:224]
+EVAL_PROMPTS = ALL_PROMPTS[224:]
 
 # Long prompts for cache pressure experiments. Indices start at 140.
 LONG_PROMPTS = _format(_LONG)
