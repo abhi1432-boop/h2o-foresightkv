@@ -21,7 +21,7 @@ WEIGHTS_OUT = "scorer_weights.py"
 
 EPOCHS = 200
 LR = 1e-3
-BATCH_SIZE = 64
+BATCH_SIZE = 512
 FIXED_POINT_BITS = 8
 RANK_LOSS_WEIGHT = 0.3  # fraction of loss from pairwise ranking
 
@@ -187,8 +187,8 @@ def train_within_domain(cross_domain_r):
         print("Within-domain: missing traces for Factual-Long prompts — run collect_traces.py first")
         return
 
-    train_loader = DataLoader(train_ds, batch_size=32, shuffle=True)
-    eval_loader  = DataLoader(eval_ds,  batch_size=32)
+    train_loader = DataLoader(train_ds, batch_size=64, shuffle=True)
+    eval_loader  = DataLoader(eval_ds,  batch_size=64)
     print(f"\n=== Within-domain experiment (Factual-Long only) ===")
     print(f"Train tokens: {len(train_ds)}  Eval tokens: {len(eval_ds)}")
 

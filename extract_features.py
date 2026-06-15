@@ -26,7 +26,6 @@ TRACE_DIR = "traces"
 LABELS_PATH = "labels.pt"
 OUT_PATH = "features.pt"
 
-BLOCK_SIZE = 16
 NUM_TRAIN = len(TRAIN_PROMPTS)
 NUM_SHORT = len(TRAIN_PROMPTS) + len(EVAL_PROMPTS)
 
@@ -35,40 +34,30 @@ def extract_features(trace, label_rec):
     prompt_len = trace["prompt_len"]
     prefill = trace["step_attns"][0]          # [num_layers, prompt_len]
     num_layers = prefill.shape[0]
-    num_blocks = (prompt_len + BLOCK_SIZE - 1) // BLOCK_SIZE
 
     third = max(num_layers // 3, 1)
-    early = prefill[:third].sum(dim=0)        # [prompt_len] raw attention, bottom third of layers
-    late  = prefill[num_layers - third:].sum(dim=0)  # [prompt_len] raw attention, top third
+    early = prefill[:third].sum(dim=0)                  # [prompt_len] bottom third of layers
+    late  = prefill[num_layers - third:].sum(dim=0)     # [prompt_len] top third of layers
 
+    def norm(v):
+        s = v.sum()
+        return v / s if s > 0 else torch.ones_like(v) / len(v)
+
+    early_norm = norm(early)
+    late_norm  = norm(late)
+
+    # layer_consistency: tokens with stable attention across all depths score high
     layer_mean = prefill.mean(dim=0).clamp(min=1e-9)
     layer_std  = prefill.std(dim=0)
-    consistency = 1.0 / (1.0 + layer_std / layer_mean)  # [prompt_len]
+    consistency = 1.0 / (1.0 + layer_std / layer_mean)  # [0, 1]
 
-    # pool raw attention into blocks, then normalize across blocks so features are comparable
-    def pool_and_norm(v):
-        blocks = torch.zeros(num_blocks)
-        for b in range(num_blocks):
-            blocks[b] = v[b * BLOCK_SIZE : (b + 1) * BLOCK_SIZE].sum()
-        s = blocks.sum()
-        return blocks / s if s > 0 else torch.ones(num_blocks) / num_blocks
-
-    late_block  = pool_and_norm(late)    # [num_blocks]
-    early_block = pool_and_norm(early)   # [num_blocks]
-
-    # layer_consistency: mean token consistency within each block
-    consist_block = torch.zeros(num_blocks)
-    for b in range(num_blocks):
-        consist_block[b] = consistency[b * BLOCK_SIZE : (b + 1) * BLOCK_SIZE].mean()
-
-    feats = torch.zeros(num_blocks, 5)
-    for b in range(num_blocks):
-        center = (b * BLOCK_SIZE + min((b + 1) * BLOCK_SIZE, prompt_len) - 1) / 2
-        feats[b, 0] = center / max(prompt_len - 1, 1)   # normalized block center position
-        feats[b, 1] = 1.0 if b == 0 else 0.0            # block 0 contains the sink tokens
-        feats[b, 2] = late_block[b].item()
-        feats[b, 3] = early_block[b].item()
-        feats[b, 4] = consist_block[b].item()
+    feats = torch.zeros(prompt_len, 5)
+    for p in range(prompt_len):
+        feats[p, 0] = p / max(prompt_len - 1, 1)
+        feats[p, 1] = 1.0 if p < 5 else 0.0
+        feats[p, 2] = late_norm[p].item()
+        feats[p, 3] = early_norm[p].item()
+        feats[p, 4] = consistency[p].item()
 
     return feats
 
@@ -93,7 +82,7 @@ def main():
             "prompt_idx": idx,
             "split": split,
             "features": feats,             # [num_blocks, 5]
-            "ltc": rec["ltc_blocks"],      # [num_blocks] block-level label
+            "ltc": rec["ltc"],
         })
 
     torch.save(records, OUT_PATH)
