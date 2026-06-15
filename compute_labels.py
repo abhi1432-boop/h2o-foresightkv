@@ -23,8 +23,18 @@ from prompts import TRAIN_PROMPTS, EVAL_PROMPTS, LONG_PROMPTS
 TRACE_DIR = "traces"
 OUT_PATH = "labels.pt"
 
-
 HORIZONS = [50, 100, 150, 200]
+BLOCK_SIZE = 16
+
+
+def pool_blocks(v):
+    """Sum token scores into 16-token blocks. Last block may be partial."""
+    n = v.shape[0]
+    num_blocks = (n + BLOCK_SIZE - 1) // BLOCK_SIZE
+    blocks = torch.zeros(num_blocks)
+    for b in range(num_blocks):
+        blocks[b] = v[b * BLOCK_SIZE : (b + 1) * BLOCK_SIZE].sum()
+    return blocks
 
 
 def compute_ltc(trace):
@@ -48,12 +58,15 @@ def compute_ltc(trace):
         lo, hi = v.min(), v.max()
         return (v - lo) / (hi - lo) if hi > lo else torch.zeros_like(v)
 
-    # average normalized LTC across all horizons (use last available if trace is short)
-    last = normalize(ltc_raw)
+    # per-token: average normalized LTC across all horizons
     normalized = [normalize(snapshots.get(h, ltc_raw)) for h in HORIZONS]
     ltc = torch.stack(normalized).mean(dim=0)
 
-    return ltc_raw, ltc
+    # per-block: pool each horizon snapshot into blocks, normalize, then average
+    block_snapshots = [normalize(pool_blocks(snapshots.get(h, ltc_raw))) for h in HORIZONS]
+    ltc_blocks = torch.stack(block_snapshots).mean(dim=0)
+
+    return ltc_raw, ltc, ltc_blocks
 
 
 def main():
@@ -69,7 +82,7 @@ def main():
             continue
 
         trace = torch.load(path, weights_only=False)
-        ltc_raw, ltc = compute_ltc(trace)
+        ltc_raw, ltc, ltc_blocks = compute_ltc(trace)
 
         records.append({
             "prompt_idx": idx,
@@ -77,6 +90,7 @@ def main():
             "input_ids": trace["input_ids"][: trace["prompt_len"]],
             "ltc": ltc,
             "ltc_raw": ltc_raw,
+            "ltc_blocks": ltc_blocks,
         })
 
     torch.save(records, OUT_PATH)
