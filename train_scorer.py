@@ -16,8 +16,11 @@ from torch.utils.data import Dataset, DataLoader
 from scipy.stats import pearsonr
 
 FEATURES_PATH = "features.pt"
+LABELS_PATH   = "labels.pt"
 MODEL_OUT = "scorer.pt"
 WEIGHTS_OUT = "scorer_weights.py"
+
+BLOCK_SIZE = 16
 
 EPOCHS = 200
 LR = 1e-3
@@ -53,6 +56,10 @@ class Scorer(nn.Module):
             nn.Linear(16, 1),
             nn.Sigmoid(),
         )
+        # Training feature distribution — used at inference for OOD detection.
+        # Stored as buffers so they're saved/loaded with the model state dict.
+        self.register_buffer("feat_mean", torch.zeros(5))
+        self.register_buffer("feat_std",  torch.ones(5))
 
     def forward(self, x):
         return self.net(x)
@@ -101,6 +108,52 @@ def export_fixed_point(model, path, bits=8):
     print(f"Fixed-point weights written to {path}")
 
 
+def pool_to_blocks(token_scores):
+    """Average per-token scores into 16-token blocks. Last block may be partial."""
+    n = token_scores.shape[0]
+    num_blocks = (n + BLOCK_SIZE - 1) // BLOCK_SIZE
+    blocks = torch.zeros(num_blocks)
+    for b in range(num_blocks):
+        blocks[b] = token_scores[b * BLOCK_SIZE : (b + 1) * BLOCK_SIZE].mean()
+    return blocks
+
+
+def block_eval(model, features_path=FEATURES_PATH, labels_path=LABELS_PATH):
+    """Block-level agreement: pool per-token scorer output → 16-token blocks,
+    then compare top-K blocks against ltc_blocks ground truth."""
+    features  = torch.load(features_path, weights_only=False)
+    labels    = torch.load(labels_path,   weights_only=False)
+    label_map = {r["prompt_idx"]: r for r in labels}
+
+    agrees = []
+    model.eval()
+    for rec in features:
+        if rec["split"] != "eval":
+            continue
+        idx = rec["prompt_idx"]
+        if idx not in label_map or "ltc_blocks" not in label_map[idx]:
+            continue
+        true_blocks = label_map[idx]["ltc_blocks"]           # [num_blocks], already normalized
+
+        with torch.no_grad():
+            token_scores = model(rec["features"]).squeeze(1)  # [prompt_len]
+        pred_blocks = pool_to_blocks(token_scores)
+
+        nb = min(pred_blocks.shape[0], true_blocks.shape[0])
+        pred_blocks = pred_blocks[:nb]
+        true_blocks = true_blocks[:nb]
+
+        k = max(1, nb // 2)
+        pred_top = set(pred_blocks.topk(k).indices.tolist())
+        true_top = set(true_blocks.topk(k).indices.tolist())
+        agrees.append(len(pred_top & true_top) / k)
+
+    mean_agree = sum(agrees) / len(agrees) if agrees else 0.0
+    print(f"\nBlock-level agreement  top-{BLOCK_SIZE * (nb // 2)}-tokens  "
+          f"({len(agrees)} eval prompts): {mean_agree:.3f}")
+    return mean_agree
+
+
 def main():
     records = torch.load(FEATURES_PATH, weights_only=False)
 
@@ -111,6 +164,11 @@ def main():
     print(f"Train tokens: {len(train_ds)}  Eval tokens: {len(eval_ds)}")
 
     model = Scorer()
+    # Record the training feature distribution for runtime OOD detection.
+    # feat_mean/feat_std summarize what "in-distribution" looks like per feature;
+    # at inference we z-score a new prompt against these to decide whether to trust the prior.
+    model.feat_mean.copy_(train_ds.x.mean(dim=0))
+    model.feat_std.copy_(train_ds.x.std(dim=0).clamp(min=1e-6))
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-5)
     mse_fn  = nn.MSELoss()
@@ -145,6 +203,7 @@ def main():
     torch.save({"model_state": model.state_dict()}, MODEL_OUT)
     print(f"Model saved to {MODEL_OUT}")
     export_fixed_point(model, WEIGHTS_OUT, bits=FIXED_POINT_BITS)
+    block_eval(model)
     return corr
 
 

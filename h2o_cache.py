@@ -279,6 +279,20 @@ class H2OCache:
         with torch.no_grad():
             predicted = scorer_model(feats).squeeze(1)  # [prompt_len]
 
+        # Domain confidence gate (OOD detection): compare this prompt's feature
+        # distribution against the training distribution stored on the scorer.
+        # z-score the prompt's per-feature mean; if any feature sits more than
+        # OOD_Z std from training, the workload doesn't resemble anything the
+        # scorer saw — zero beta so the prior has no effect and we fall back to
+        # plain cold-start H2O (worst case = baseline, never inverted eviction).
+        # The 5 stored numbers (mean) + 5 (std) are the "cheap runtime signal."
+        OOD_Z = 3.0
+        if hasattr(scorer_model, "feat_mean"):
+            prompt_mean = feats.mean(dim=0)                              # [5]
+            z = (prompt_mean - scorer_model.feat_mean).abs() / scorer_model.feat_std
+            if z.max().item() > OOD_Z:
+                self.beta = 0.0
+
         # Push predicted scores to every layer.  All 32 layers now start from the
         # same importance estimate rather than from zero.
         # Also save a copy in _prior_scores so beta decay can re-blend each step.
