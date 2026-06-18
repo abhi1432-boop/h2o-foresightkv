@@ -602,4 +602,59 @@ The bank's mean per-domain r (0.647) is *below* the general scorer (0.747). But 
 **The conclusion (the cheap lesson Chaithu wanted):**
 At ~300 total prompts, per-domain specialization can't be fairly tested — splitting the data into 7 piles starves each scorer. The register-file thesis is not refuted (Factual-Long signals specialists would win with enough data), but to test it properly you need **a few hundred prompts PER domain, not in total**. This is exactly the "learn it on 300 prompts, not 3,000" outcome: scale per-domain data before scaling the number of domains.
 
-**Next steps:** Part 2 (z-score router over the bank, reusing the existing OOD gate) and Part 3 (oracle / learned / wrong / general routing eval on identical per-domain test sets, including the wrong-routing inversion check and the held-out-domain gate check).
+### Parts 2 & 3 — Router + four-policy eval (2026-06-18)
+
+`eval_domain_bank.py`: a z-score router (route a prompt to the bank scorer whose
+training distribution it's closest to; gate to beta=0 if none match) plus a
+four-policy comparison on each domain's OWN held-out test set.
+
+| Domain | oracle | learned | general* | wrong_min | wrong_avg |
+|---|---|---|---|---|---|
+| Code | 0.558 | 0.559 | 0.713 | 0.555 | 0.655 |
+| Conversational | 0.557 | 0.599 | 0.723 | 0.559 | 0.662 |
+| Creative | 0.677 | 0.580 | 0.740 | 0.575 | 0.661 |
+| Factual-Long | **0.843** | 0.589 | 0.729 | 0.564 | 0.621 |
+| Instructions | 0.583 | 0.664 | **0.749** | 0.578 | 0.682 |
+| QA | 0.613 | 0.641 | 0.756 | 0.568 | 0.676 |
+| Reasoning | 0.698 | 0.653 | 0.676 | 0.535 | 0.599 |
+| **MEAN** | 0.647 | 0.612 | 0.727 | 0.562 | 0.651 |
+
+Routing accuracy (router picks true domain): **35.9%**.
+Held-out gate (own scorer removed, prompts tripping OOD z>3.0): **0%**.
+
+**\*Leakage caveat:** the general scorer trains on idx 0–255, which CONTAINS the
+bank test prompts for QA/Reasoning/Conversational/Code/Creative — so the general
+column is inflated (evaluated on trained-on prompts) for those 5 domains. Only
+**Factual-Long** (test 264–279) and **Instructions** (312–319) are clean
+held-out tests for the generalist. A leakage-free comparison requires retraining
+the general scorer with all bank test prompts excluded.
+
+**Findings (the robust, leakage-proof ones):**
+1. **No inversion.** wrong_min never goes negative (min 0.535) — a mismatched
+   prior is only mildly worse than the right one, not catastrophic. The
+   original −0.507 inversion was an artifact of the OLD broken pipeline
+   (50-step labels + surface features), NOT a fundamental property. With the
+   fixed pipeline, token importance is largely **domain-general**.
+2. **Routing is unreliable** (35.9%) — the 5 prefill features don't separate
+   these domains in feature space; `learned` routing (0.612) is worse than
+   using any single scorer.
+3. **The OOD gate is dormant among in-distribution domains** (0%) — these 7
+   domains share a feature region; the gate is a safety net for genuinely alien
+   workloads, not a domain router.
+4. **Specialists are data-starved.** Clean evidence: Factual-Long (64 prompts)
+   oracle 0.843 beats the generalist even leakage-free; Instructions (32
+   prompts) specialist 0.583 loses to the generalist's 0.749. More per-domain
+   data → better specialist.
+
+**Revised conclusion (supersedes the Track-C-Part-1 lean toward specialization):**
+The programmable-register-file / per-domain-bank thesis is **largely not
+supported** at this task and scale. A single general scorer generalizes well;
+per-domain routing is unreliable and unnecessary; wrong priors don't invert.
+The cleaner architecture is ONE general scorer (fixed or single programmable
+weight set) plus the OOD gate kept as a cheap dormant safety net for alien
+inputs. The register file would only pay off if (a) you collect hundreds of
+prompts PER domain (so specialists stop starving) AND (b) the workloads are
+actually feature-separable — neither holds here.
+
+**Open follow-up:** retrain the general scorer excluding all bank test prompts,
+to nail the leakage-free general-vs-oracle comparison.
