@@ -488,6 +488,30 @@ Block-level keep-set agreement, however, is **0.725**, not perfect. `block_agree
 
 **The number for Chaithu:** at the real key path, the importance *ranking* is preserved almost exactly (`token_r = 0.996`) and TurboQuant is clearly the best quantizer, but block-eviction agreement is **0.725** — meaningfully above the naive baselines (~0.59), not the perfect 1.000 the single-prompt test implied. The old 0.68 number came from post-softmax noise + naive INT3 (both wrong assumptions); the honest figure for the real path is ~0.73 block agreement with near-perfect ranking correlation.
 
+### Reference verification — "check your work" against the real repos (2026-06-18)
+
+Cross-checked the implementation against the three LonghornSilicon/turboquant-plus repos Chaithu named:
+- **quantizer matches.** Our vendored `turboquant/quantizer.py` is byte-identical to turboquant-plus's. `TurboQuantProd(bits=4)` = 3-bit Lloyd-Max MSE + 1-bit QJL on the residual = **4.25 bpv**, which matches the `kv-cache-engine` spec ("keys at 4.25 bpv") exactly. The `dequantize(quantize(K))`→QK^T we used is algebraically identical to the reference's asymmetric `attention_score()` estimator, so the key-path math is faithful, not approximated.
+- **Correction:** the "outlier channels kept FP" feature is in `kv_cache.py`'s docstring but **NOT implemented** in `TurboQuantKVCache`. The only real difference from quantize-everything is the **recent-token buffer** (`buffer_size=128`).
+- **Wired in:** vendored turboquant-plus's `turboquant/kv_cache.py` and the bit-accurate `kv_cache_engine_ref.py` (pure-Python, verified round-trip at dim=128, key_bpv=4.25 — the silicon ground truth).
+
+### Real-key-path buffer sweep — `quant_eviction_real.py` (results pending re-run)
+
+The original run quantized every key. `quant_eviction_real.py` reproduces
+`TurboQuantKVCache`'s actual path (TurboQuantProd + recent-token buffer) and
+**sweeps buffer_size ∈ {0, 16, 64, 128}**. On these short prompts buffer=128
+leaves most keys FP (trivial), so the sweep shows the transition: buffer=0 is
+the stress test (should reproduce ~0.725); larger buffers show the buffer's
+protective effect. The realistic chip regime is long context (2048 tokens) where
+the 128-token buffer is ~6% of the sequence — so buffer=0 (the quantized bulk)
+is the most representative single number, and 0.725 stands as the conservative
+headline. *(Table to be filled after the Colab run.)*
+
+**Next validation tier (wired, not yet run):** re-run Track A through the
+bit-accurate `kv_cache_engine_ref.py` (fixed-point Q3.12, its own rotation +
+codebook) for the true-silicon block_agree, including fixed-point rounding.
+Needs a quantize-once interception to be tractable (pure-Python per-vector).
+
 ---
 
 ## Track B — ForesightKV Scorer Training (Final Results, 2026-06-16)
