@@ -560,3 +560,46 @@ Cross-domain r = +0.791 means the scorer generalizes — it is not overfitting t
 
 **The conclusion Chaithu asked for:**
 Architecture works. Data was the bottleneck. With 330 prompts and 200-step labels the scorer crosses r=0.79 cross-domain and block_agree=0.734 — well above the random baseline of 0.5. ForesightKV pre-seeding will meaningfully shift eviction decisions at the start of generation.
+
+---
+
+## Track C — Per-Domain Scorer Bank (Register File Experiment, 2026-06-18)
+
+**Question:** Does a BANK of per-domain specialist scorers beat the single general scorer? This is the empirical test of the programmable-register-file thesis — instead of one set of 97 weights baked into silicon, hold one weight set per workload and load the matching one (with the OOD gate as fallback when none match).
+
+**Setup:**
+- Regenerated the full 330-prompt trace pipeline on Colab T4 (the prior features.pt/labels.pt were lost — ephemeral Colab + gitignored; now backed up to Drive at `MyDrive/h2o_data/`).
+- `train_domain_bank.py`: one Scorer per domain (7 domains), trained only on that domain's prompts, 80/20 within-domain train/test split, same architecture/loss/epochs as the general scorer. Each scorer stores its own feat_mean/feat_std for routing.
+
+**Reproducibility note (re-run of the general scorer on regenerated data):**
+
+| Metric | Original (2026-06-16) | Re-run (2026-06-18) |
+|---|---|---|
+| Block-level agreement | 0.734 | **0.734** (exact) |
+| Within-domain r | 0.780 | **0.778** |
+| Cross-domain r | 0.791 | **0.747** |
+
+block_agree and within-domain reproduce exactly → the regenerated dataset is correct. Cross-domain r varies ±0.04 run-to-run because training is **not seeded** (DataLoader shuffle). TODO: set a fixed seed so cross-domain r is reproducible.
+
+**Bank results (per-domain, each on its own held-out test prompts):**
+
+| Domain | Train prompts | Test prompts | corr | top50 |
+|---|---|---|---|---|
+| Factual-Long | **64** | 16 | **0.843** | 0.640 |
+| Reasoning | 32 | 8 | 0.698 | 0.680 |
+| Creative | 32 | 8 | 0.677 | 0.660 |
+| QA | 32 | 8 | 0.613 | 0.940 |
+| Instructions | 32 | 8 | 0.583 | 0.620 |
+| Code | 32 | 8 | 0.558 | 0.640 |
+| Conversational | 32 | 8 | 0.557 | 0.500 |
+| **MEAN per-domain** | | | **0.647** | |
+
+**The finding (data starvation, not a refutation of specialization):**
+The bank's mean per-domain r (0.647) is *below* the general scorer (0.747). But this is a data-quantity artifact, not evidence that specialization fails. Each specialist trains on only ~32 prompts (~500 tokens); the generalist trains on 256 prompts (4564 tokens) and benefits from cross-domain regularities. The tell: **Factual-Long, the only domain with 2× the data (64 prompts), scored 0.843 — clearly beating the generalist**, while every 32-prompt domain clustered at 0.55–0.70. More per-domain data → better specialist.
+
+**Caveat — not yet apples-to-apples:** the generalist's 0.747 is measured on a mixed 64-prompt eval set, while each specialist is measured on its own domain's test set. A fair comparison evaluates the generalist ON each domain's test set (the "single general scorer" policy in the planned routing eval, Part 3).
+
+**The conclusion (the cheap lesson Chaithu wanted):**
+At ~300 total prompts, per-domain specialization can't be fairly tested — splitting the data into 7 piles starves each scorer. The register-file thesis is not refuted (Factual-Long signals specialists would win with enough data), but to test it properly you need **a few hundred prompts PER domain, not in total**. This is exactly the "learn it on 300 prompts, not 3,000" outcome: scale per-domain data before scaling the number of domains.
+
+**Next steps:** Part 2 (z-score router over the bank, reusing the existing OOD gate) and Part 3 (oracle / learned / wrong / general routing eval on identical per-domain test sets, including the wrong-routing inversion check and the held-out-domain gate check).
