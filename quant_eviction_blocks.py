@@ -44,7 +44,7 @@ from turboquant.quantizer import TurboQuantProd
 MODEL_NAME     = "Qwen/Qwen2.5-3B-Instruct"
 BLOCK_SIZE     = 16     # the chip tracks 16-token blocks
 MAX_NEW_TOKENS = 24     # decode steps — more = more meaningful importance signal
-NUM_PROMPTS    = 5      # scale up for more meaningful averages
+NUM_PROMPTS    = 10     # all LONG_PROMPTS — best average the small set allows
 TOKEN_BUDGET   = 64     # H2O keep budget (how many tokens survive) for agreement
 
 

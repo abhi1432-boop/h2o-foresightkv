@@ -490,6 +490,10 @@ Naive INT3 hitting 1.000 block_agree is partly luck from having only 10 blocks �
 
 ## Track B — ForesightKV Scorer Training (Final Results, 2026-06-16)
 
+> **Note:** the final numbers below were produced on a Colab T4 run, not locally.
+> The local `scorer.pt` (and `features.pt`/`labels.pt`) will NOT match these results
+> and won't be updated — to reproduce, re-run the pipeline on Colab.
+
 **Question:** Can a 97-parameter MLP trained on prefill features predict which tokens will be important, using only what the hardware can see before generation starts?
 
 **Setup:**
