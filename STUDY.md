@@ -432,10 +432,11 @@ It proves the architecture is correct and the training data is the only problem.
 
 | Experiment | Result | What it means |
 |---|---|---|
-| Cross-domain correlation (final) | **+0.791** | Scorer reliably predicts importance across all domains |
-| Within-domain correlation (final) | **+0.780** | Strong prediction within same domain |
-| Block-level agreement (final) | **0.734** | 73.4% of important 16-token blocks correctly identified at prefill |
-| Within-domain top-50 overlap | **0.960** | 48 of the 50 most important tokens correctly identified |
+| Track B: cross-domain correlation (final) | **+0.791** | Scorer reliably predicts importance across all domains |
+| Track B: within-domain correlation (final) | **+0.780** | Strong prediction within same domain |
+| Track B: scorer block-level agreement | **0.734** | 73.4% of important 16-token blocks correctly *predicted* at prefill |
+| Track B: within-domain top-50 overlap | **0.960** | 48 of the 50 most important tokens correctly identified |
+| Track A: TurboQuant key-quant block agreement | **0.725** | Real chip key path *keeps* 72.5% of block eviction decisions (ranking r = 0.996) |
 | Cross-domain correlation (v1, old) | -0.507 | Original broken result: wrong features + 50-step label horizon |
 
 ---
@@ -453,38 +454,39 @@ The scorer is a 5-16-1 MLP with 97 parameters. It runs once per token during pre
 
 ---
 
-## Track A — Quantization Eviction Agreement (2026-06-13)
+## Track A — Quantization Eviction Agreement (2026-06-18)
 
 **Question:** Does TurboQuant key quantization (the real chip path) change which tokens H2O evicts?
 
 **Setup:**
-- Model: Qwen2.5-3B-Instruct, 1 prompt (166 tokens = 10 blocks of 16), 24 decode steps
+- Model: Qwen2.5-3B-Instruct on Colab T4 (bfloat16, cuda)
+- All 10 `LONG_PROMPTS` (157–199 tokens each, 9–12 blocks per prompt), 24 decode steps
 - Keys quantized BEFORE the QK dot product (how the chip actually works, not post-softmax)
 - H2O token budget = 64, block size = 16
 - Four conditions: fp (full precision), tq4 (TurboQuant 4-bit), int4 (naive uniform), int3 (naive uniform)
 
-**Results:**
+**Results (averaged over 10 prompts):**
 
 | Condition | token_agree | block_agree | token_r | block_r |
 |---|---|---|---|---|
-| TurboQuant b=4 | 0.703 | **1.000** | 0.994 | 0.990 |
-| Naive INT4 | 0.594 | 0.500 | 0.396 | 0.535 |
-| Naive INT3 | 0.578 | 1.000 | 0.634 | 0.803 |
+| TurboQuant b=4 | 0.588 | **0.725** | **0.996** | **0.992** |
+| Naive INT4 | 0.542 | 0.600 | 0.793 | 0.910 |
+| Naive INT3 | 0.519 | 0.575 | 0.797 | 0.808 |
 
 **What the metrics mean:**
 - `token_agree` — fraction of the 64-token keep set that matches full precision
-- `block_agree` — fraction of the 10 blocks the chip would evict/keep that match full precision (this is the number Chaithu asked for)
+- `block_agree` — fraction of the kept 16-token blocks that match full precision (this is the number Chaithu asked for; budget keeps the top ~4 blocks of 9–12)
 - `token_r` — Pearson correlation of the full importance ranking vs fp
 - `block_r` — same but after summing importance into 16-token blocks
 
 **The story:**
-TurboQuant's Hadamard rotation + Lloyd-Max codebook is designed to preserve inner products (the QK dot product). Even though keys are compressed to ~4.25 bits, the attention scores still rank tokens in nearly the same order as full precision (`token_r=0.994`). At the 16-token block level that the chip actually evicts on, agreement is **perfect (1.000)**.
+TurboQuant's Hadamard rotation + Lloyd-Max codebook is designed to preserve inner products (the QK dot product), and it does: even compressed to ~4.25 bits, the attention scores rank tokens almost identically to full precision — `token_r = 0.996`, `block_r = 0.992`, far above naive INT4/INT3 (~0.79). The continuous importance *ordering* is essentially untouched by the real key path.
 
-Naive INT4 is terrible (`block_agree=0.500`, `token_r=0.396`) — coin-flip quality, worse than doing nothing. This is because transformer keys have a few large outlier channels that dominate when you quantize uniformly. TurboQuant's rotation spreads those outliers before quantizing, which is why it preserves rankings and naive INT4 doesn't.
+Block-level keep-set agreement, however, is **0.725**, not perfect. `block_agree` is a hard discrete metric: with budget = 64 the chip keeps only the top ~4 of 9–12 blocks, and blocks near that cutoff have near-equal importance, so a tiny quantization wobble flips which side of the budget they land on. The smooth ranking survives (r ≈ 0.996); the discrete top-k boundary is what's sensitive. TurboQuant is still the best of the three quantizers at block granularity (0.725 vs 0.600 INT4, 0.575 INT3), just not the perfect 1.000 a single prompt suggested.
 
-Naive INT3 hitting 1.000 block_agree is partly luck from having only 10 blocks — don't read into it. Its token_r=0.634 shows the ranking is meaningfully damaged.
+> **Supersedes the 2026-06-13 single-prompt result.** That run (1 prompt, 10 blocks) reported `block_agree = 1.000` for *both* TurboQuant and naive INT3 — both were small-sample artifacts. INT3's apparent perfection collapsed to 0.575 once averaged over 10 prompts, confirming the 1.000s were luck, not fidelity.
 
-**The number for Chaithu:** block_agree = 1.000 for TurboQuant. The chip's actual key path does not hurt eviction fidelity at block granularity. The old 0.68 number was wrong because it used post-softmax noise + naive INT3 — both bad assumptions.
+**The number for Chaithu:** at the real key path, the importance *ranking* is preserved almost exactly (`token_r = 0.996`) and TurboQuant is clearly the best quantizer, but block-eviction agreement is **0.725** — meaningfully above the naive baselines (~0.59), not the perfect 1.000 the single-prompt test implied. The old 0.68 number came from post-softmax noise + naive INT3 (both wrong assumptions); the honest figure for the real path is ~0.73 block agreement with near-perfect ranking correlation.
 
 ---
 
