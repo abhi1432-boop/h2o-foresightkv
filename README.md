@@ -64,6 +64,13 @@ Lloyd-Max → 1-bit QJL on the residual ≈ 4.25 bpv. `dequantize(quantize(K))`�
 is algebraically identical to the reference's asymmetric `attention_score()`
 estimator, so the simulation is faithful. See `STUDY.md` for the full results.
 
+### Papers
+
+- **H2O** (this project's basis) — [NeurIPS 2023](https://neurips.cc/virtual/2023/poster/71645) · [arXiv:2306.14048](https://arxiv.org/abs/2306.14048)
+- **TurboQuant+** — [paper (PDF)](https://github.com/themoddedcube/turboquant-plus/blob/turboquant-plus/paper/turboquant_plus_v2.pdf)
+- **Adaptive Precision Attention (ACU)** — [paper (PDF)](https://github.com/LonghornSilicon/adaptive-precision-attention/blob/master/paper/adaptive_precision_attention.pdf)
+- **KV Cache Engine** — [ISA spec (PDF)](https://github.com/LonghornSilicon/kv-cache-engine/blob/master/docs/isa/kv_cache_engine_isa.pdf)
+
 ## Files
 
 | File | What it does |
