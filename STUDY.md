@@ -495,17 +495,33 @@ Cross-checked the implementation against the three LonghornSilicon/turboquant-pl
 - **Correction:** the "outlier channels kept FP" feature is in `kv_cache.py`'s docstring but **NOT implemented** in `TurboQuantKVCache`. The only real difference from quantize-everything is the **recent-token buffer** (`buffer_size=128`).
 - **Wired in:** vendored turboquant-plus's `turboquant/kv_cache.py` and the bit-accurate `kv_cache_engine_ref.py` (pure-Python, verified round-trip at dim=128, key_bpv=4.25 — the silicon ground truth).
 
-### Real-key-path buffer sweep — `quant_eviction_real.py` (results pending re-run)
+### Real-key-path buffer sweep — `quant_eviction_real.py` (2026-06-23)
 
-The original run quantized every key. `quant_eviction_real.py` reproduces
-`TurboQuantKVCache`'s actual path (TurboQuantProd + recent-token buffer) and
-**sweeps buffer_size ∈ {0, 16, 64, 128}**. On these short prompts buffer=128
-leaves most keys FP (trivial), so the sweep shows the transition: buffer=0 is
-the stress test (should reproduce ~0.725); larger buffers show the buffer's
-protective effect. The realistic chip regime is long context (2048 tokens) where
-the 128-token buffer is ~6% of the sequence — so buffer=0 (the quantized bulk)
-is the most representative single number, and 0.725 stands as the conservative
-headline. *(Table to be filled after the Colab run.)*
+`quant_eviction_real.py` reproduces `TurboQuantKVCache`'s actual path
+(TurboQuantProd + recent-token buffer) and sweeps buffer_size ∈ {0,16,64,128},
+all vs full-precision ground truth, averaged over the 10 LONG_PROMPTS:
+
+| buffer_size | block_agree | note |
+|---|---|---|
+| 0 | **0.725** | quantize all (reproduces quant_eviction_blocks.py exactly) |
+| 16 | 0.725 | |
+| 64 | 0.700 | |
+| 128 | 0.650 | kv_cache.py default |
+
+**Counterintuitive result:** keeping recent tokens full-precision does NOT
+improve block-eviction agreement — it slightly *decreases* it (0.725 → 0.650).
+Likely cause: uniform quantization (buffer=0) degrades every block consistently,
+which preserves their *relative* ranking; a partial buffer creates a precision
+discontinuity between FP-recent and quantized-older blocks that can shuffle
+borderline blocks across the keep/evict boundary. (Per-prompt the sweep is noisy
+and non-monotonic — only 9–12 blocks, top-4 kept.)
+
+**Why this matters:** earlier worry was that quantizing *everything* made 0.725
+pessimistic. The sweep shows the opposite — the recent-token buffer is a value-
+quality optimization, not an eviction-fidelity one, and doesn't rescue the
+number. So **0.725 is the honest, robust headline**, not a conservative artifact.
+buffer=0 reproduced quant_eviction_blocks.py to 3 decimals, confirming the real-
+path harness is correct.
 
 **Next validation tier (wired, not yet run):** re-run Track A through the
 bit-accurate `kv_cache_engine_ref.py` (fixed-point Q3.12, its own rotation +
@@ -682,3 +698,51 @@ actually feature-separable — neither holds here.
 
 **Open follow-up:** retrain the general scorer excluding all bank test prompts,
 to nail the leakage-free general-vs-oracle comparison.
+
+### Part 4 — Leakage-free retrain + reproducibility crisis (2026-06-23)
+
+`train_general_clean.py` retrains the general scorer excluding ALL 64 bank test
+prompts, then compares leakage-free against each oracle. Fresh full re-run:
+
+| Domain | oracle | general (clean) | winner |
+|---|---|---|---|
+| Code | 0.645 | 0.612 | oracle |
+| Conversational | 0.606 | 0.619 | general |
+| Creative | 0.754 | 0.639 | oracle |
+| Factual-Long | 0.853 | 0.627 | oracle |
+| Instructions | 0.666 | 0.645 | oracle |
+| QA | 0.648 | 0.658 | general |
+| Reasoning | 0.620 | 0.582 | oracle |
+| **MEAN** | **0.685** | **0.626** | oracle 5/7 |
+
+**This FLIPS the Part-2/3 conclusion** — leakage-free, the oracle specialists
+beat the generalist (0.685 vs 0.626, winning 5/7). The earlier "generalist wins"
+came from a leaky general column AND a run where the general happened to train
+strong.
+
+**…but it's inside the noise. Training is unseeded and the variance is large:**
+
+| Metric | run 1 (06-16) | run 2 (06-18) | run 3 (06-23) |
+|---|---|---|---|
+| Cross-domain r | 0.791 | 0.747 | **0.632** |
+| Within-domain r | 0.780 | 0.778 | **0.880** |
+| Scorer block_agree | 0.734 | — | **0.812** |
+| Bank mean per-domain | — | 0.647 | 0.685 |
+
+Cross-domain r swings 0.63–0.79; within-domain 0.78–0.88. The oracle-vs-general
+gap (0.06) is **smaller than the run-to-run variance**, so a single run cannot
+decide register-file-vs-generalist either way.
+
+**Honest conclusion (run-stable findings only):**
+1. **No inversion** — wrong_min never negative across runs (0.56–0.65). The
+   −0.507 was a broken-pipeline artifact. Robust.
+2. **Routing unreliable** (35.9%, deterministic) and **gate dormant** (0%). Robust.
+3. **Specialists data-starved except Factual-Long** (0.853 with 2× data). Robust.
+4. **General-vs-specialist is a statistical tie at this scale** — cannot be
+   called without seeding + multi-run averaging. NOT robust; do not report a
+   winner to Chaithu.
+
+**CRITICAL TODO before the email:** seed all training (`torch.manual_seed`,
+seeded DataLoader generator) and re-run, OR average ≥3 runs and report mean ± sd.
+The current swing (±0.08 cross-domain) is too large to put a single headline
+number in front of Chaithu. Track A (0.725, deterministic) is unaffected.
