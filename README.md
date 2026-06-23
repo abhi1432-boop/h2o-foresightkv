@@ -48,11 +48,32 @@ Results from the approximation across 30 eval prompts:
 
 The importance ranking survives 3-bit well (r=0.997) but ~1 in 3 borderline tokens flip at the eviction cutoff. Most noise appears at INT4 — going from 4 to 3 bits barely makes it worse.
 
+## Upstream / hardware references (LonghornSilicon accelerator)
+
+This work targets the LonghornSilicon LLM inference accelerator. Three upstream
+repos are connected:
+
+| Repo | Role | How it's wired in here |
+|------|------|------------------------|
+| [themoddedcube/turboquant-plus](https://github.com/themoddedcube/turboquant-plus) | TurboQuant+ reference (the real KV quantization) | `turboquant/quantizer.py` is byte-identical to theirs; `turboquant/kv_cache.py` (`TurboQuantKVCache`) vendored. Drives the Track A key path. |
+| [LonghornSilicon/kv-cache-engine](https://github.com/LonghornSilicon/kv-cache-engine) | Block 2 — the silicon the quantization experiment probes (keys 4.25 bpv) | `kv_cache_engine_ref.py` vendored (bit-accurate Python ref, verified round-trip at dim=128). The block-agreement number is this engine's eviction fidelity. |
+| [LonghornSilicon/adaptive-precision-attention](https://github.com/LonghornSilicon/adaptive-precision-attention) | The ACU (INT8/FP16 tile routing) — sibling block | Not vendored (no ACU code is run here). Connected conceptually: the scorer is designed as a VecU epilogue seeding 128 block registers, so scorer output is pooled per 16-token block. |
+
+The real key path = `TurboQuantProd(bits=4)` = Hadamard/random rotation → 3-bit
+Lloyd-Max → 1-bit QJL on the residual ≈ 4.25 bpv. `dequantize(quantize(K))`→QK^T
+is algebraically identical to the reference's asymmetric `attention_score()`
+estimator, so the simulation is faithful. See `STUDY.md` for the full results.
+
 ## Files
 
 | File | What it does |
 |------|-------------|
 | `h2o_cache.py` | `H2OCache`: append, score accumulation, eviction, ForesightKV seeding, beta decay |
+| `quant_eviction_blocks.py` | Track A: real TurboQuant key path, per-token + 16-token block eviction agreement |
+| `quant_eviction_real.py` | Track A: `TurboQuantKVCache` path (TurboQuantProd + recent-token buffer), buffer sweep |
+| `train_domain_bank.py` | Track C: per-domain scorer bank (register-file experiment) |
+| `eval_domain_bank.py` | Track C: z-score router + oracle/learned/general/wrong policy eval |
+| `train_general_clean.py` | Track C: leakage-free general-vs-oracle comparison |
 | `patch.py` | `H2OCacheAdapter` (inherits `DynamicCache`) + `patch_model` hooks |
 | `model.py` | Loads phi-2, runs baseline vs H2O comparison |
 | `collect_traces.py` | Runs phi-2 on all prompts, saves attention weights at every decode step |
