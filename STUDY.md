@@ -746,3 +746,48 @@ decide register-file-vs-generalist either way.
 seeded DataLoader generator) and re-run, OR average ≥3 runs and report mean ± sd.
 The current swing (±0.08 cross-domain) is too large to put a single headline
 number in front of Chaithu. Track A (0.725, deterministic) is unaffected.
+
+### Part 5 — SEEDED final numbers (SEED=42, reproducible, 2026-06-23)
+
+All training now seeded (`set_seed()` in train_scorer/train_domain_bank/
+train_general_clean). Verified byte-identical across re-runs. These are the
+citable numbers.
+
+**Track B (scorer), seed 42:**
+- Cross-domain r = **0.771** (unseeded range was 0.63–0.79; 0.771 is the seed-42 draw)
+- Within-domain r (Factual-Long) = **0.893**, top50 = 0.960
+- Scorer block_agree = **0.734** (reproduces the original exactly — block_agree is the most stable metric)
+
+**Track C bank mean per-domain = 0.722** (QA 0.715, Reasoning 0.671,
+Conversational 0.661, Code 0.674, Creative 0.693, Factual-Long 0.927,
+Instructions 0.716).
+
+**Track C leakage-free (seed 42), oracle vs general:**
+
+| | oracle (specialist) | general (clean) | learned routing | wrong_avg (mismatched specialist) |
+|---|---|---|---|---|
+| MEAN | **0.722** | 0.662 | 0.703 | 0.720 |
+
+Specialists win **7/7** domains leakage-free. Routing 35.9%, gate 0%.
+
+**What's now robust (consistent across both leakage-free runs, 06-18 and 06-23):**
+1. **Fair-comparison: single-domain specialists beat the mixture-trained
+   generalist by ~0.06** (oracle 0.722 vs general 0.662; same +0.06 margin as the
+   unseeded 0.685 vs 0.626). The earlier "generalist wins" was purely the
+   leakage artifact, not a real effect.
+2. **But it is NOT a routing win: wrong_avg (0.720) ≈ oracle (0.722).** Using
+   *any* single-domain scorer is as good as the *correct* one — and all of them
+   beat the generalist. So the benefit is from training on COHERENT single-domain
+   data, NOT from matching the workload. Per-domain routing is pointless here
+   (router is 36% anyway, and being right doesn't help).
+3. **No inversion** (wrong_min 0.625–0.692, never negative). Robust.
+
+**Architectural conclusion (seeded, fair):** a per-domain register file *with a
+router* is **not** justified — routing is unreliable AND a mismatched scorer
+works just as well, so there's nothing to route. The real, reproducible signal
+is that a scorer trained on coherent data beats one trained on a heterogeneous
+mix (~0.06), and that everything is small-data-noisy. The practical
+recommendation stays: ONE general scorer + OOD gate as a dormant safety net, and
+**scale data** (the +0.06 and the variance are both data-limited symptoms). The
+seed makes numbers reproducible; it does not make the ~0.06 gaps large — they sit
+in the small-data regime, so report them with the variance, not as hard wins.
