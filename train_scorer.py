@@ -10,10 +10,26 @@ Outputs:
 """
 
 import math
+import random
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from scipy.stats import pearsonr
+
+SEED = 42
+
+
+def set_seed(seed=SEED):
+    """Make a training run reproducible: same weights init + same data shuffle
+    every time, so the reported numbers don't swing run-to-run. Call at the
+    start of each training entry point (before any DataLoader/model creation)."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
 
 FEATURES_PATH = "features.pt"
 LABELS_PATH   = "labels.pt"
@@ -155,6 +171,7 @@ def block_eval(model, features_path=FEATURES_PATH, labels_path=LABELS_PATH):
 
 
 def main():
+    set_seed()
     records = torch.load(FEATURES_PATH, weights_only=False)
 
     train_ds = TokenDataset(records, "train")
@@ -217,6 +234,7 @@ def train_within_domain(cross_domain_r):
     it proves the architecture is sound and the issue is purely training data.
     Saves the within-domain scorer to scorer_indomain.pt.
     """
+    set_seed()
     FACTUAL_TRAIN = set(range(200, 256))  # all 56 Factual-Long train prompts
     FACTUAL_EVAL  = set(range(256, 280))  # all 24 Factual-Long eval prompts
 

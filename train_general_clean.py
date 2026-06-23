@@ -22,7 +22,7 @@ import numpy as np
 from scipy.stats import pearsonr
 from torch.utils.data import DataLoader
 
-from train_scorer import Scorer
+from train_scorer import Scorer, set_seed
 from train_domain_bank import IndexDataset, fit
 
 FEATURES_PATH = "features.pt"
@@ -55,6 +55,7 @@ def domain_corr(model, rec_by_idx, idxs):
 
 
 def main():
+    set_seed()
     records = torch.load(FEATURES_PATH, weights_only=False)
     rec_by_idx = {r["prompt_idx"]: r for r in records}
     bank = load_bank()

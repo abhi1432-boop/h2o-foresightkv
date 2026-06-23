@@ -37,7 +37,7 @@ from torch.utils.data import Dataset, DataLoader
 
 # Reuse the exact architecture, hyperparameters, and loader-based eval that the
 # single general scorer uses — the bank must be an apples-to-apples comparison.
-from train_scorer import Scorer, EPOCHS, LR, RANK_LOSS_WEIGHT, evaluate
+from train_scorer import Scorer, EPOCHS, LR, RANK_LOSS_WEIGHT, evaluate, set_seed
 from prompts import (_QA, _REASONING, _CONVERSATIONAL, _CODE, _CREATIVE,
                      _FACTUAL_LONG, _INSTRUCTIONS)
 
@@ -131,6 +131,7 @@ def main():
 
     results = {}
     for name, _ in DOMAIN_LISTS:
+        set_seed()  # identical init + shuffle per domain, independent of order
         idxs = [i for i in ranges[name] if i in traced]
         if len(idxs) < 4:
             print(f"{name:16s}  -- skipped: only {len(idxs)} traced prompts --")
