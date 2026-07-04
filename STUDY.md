@@ -8,6 +8,56 @@ to anyone — even someone who has never heard of transformers.
 
 ## Diagrams
 
+### LonghornSilicon Chip Architecture (hardware blocks + where software plugs in)
+
+```
+  SOFTWARE (offline — laptop / Colab)                 LOADED ONTO THE CHIP
+  ─────────────────────────────────────              ─────────────────────
+  train_scorer.py  → 97 int8 scorer weights  ───────► VecU's scorer weight registers
+  (train the LLM)  → model weights (billions) ──────► DRAM
+
+  h2o_cache.py, turboquant/, quant_eviction_*.py
+     = PRACTICE chip in software. Tests the design (Tracks A/B/C).
+       Never runs on the real chip — it just imitates it.
+
+
+┌─────────────────────────── LonghornSilicon chip (all HARDWARE) ────────────┐
+│                                                                             │
+│   ┌──────────── ACU — Attention Compute Unit ───────────┐                   │
+│   │   MatE = big matrix calculator (Q·Kᵀ , ·V)           │                   │
+│   │   VecU = vector calculator (softmax) + RUNS SCORER   │                   │
+│   │          └ scorer weight registers ◄─[from train_scorer]                │
+│   └────┬──────────────────────────────────┬─────────────┘                   │
+│        │ needs decompressed K/V            │ scorer's importance guess       │
+│        ▼                                   ▼                                 │
+│  ┌──────── KV Cache Engine ────────┐  ┌─────────── TIU ───────────┐          │
+│  │ SRAM: compressed K/V (HOT)      │  │ 128 block tally registers │          │
+│  │ compress: norm→WHT→Lloyd→QJL    │  │ ranks importance          │          │
+│  │ decompress on read              │  │ decides what to evict     │          │
+│  └────┬──────────────────▲─────────┘  └───────────┬───────────────┘          │
+│       │ "SRAM full!"      │ store                 │ "evict block N"           │
+│       ▼                   │                       ▼                           │
+│  ┌──────────── MHC — Memory Hierarchy Controller ───────────┐                │
+│  │   WARM → spill to DRAM      │      COLD → trash (gone)    │                │
+│  └───────────────────────┬─────────────────────────────────-┘                │
+└──────────────────────────┼──────────────────────────────────────────────────┘
+                           ▼
+                     off-chip DRAM
+              (model weights + warm/cold KV)
+```
+
+**Example generation ("The sky is" → "blue"):**
+1. Model weights stream from DRAM → ACU. `[HW]`
+2. ACU/MatE runs attention over the prompt. `[HW]`
+3. KV Cache Engine compresses each key-value → stores in SRAM. `[HW]`
+4. End of prefill: VecU runs the scorer (weights from `train_scorer.py`) → writes importance guesses into the TIU tally. `[HW, weights from SW]`
+5. Decode: KV Engine decompresses keys → ACU picks "blue". `[HW]`
+6. TIU updates the tally with real attention; scorer guess fades (beta-decay). `[HW]`
+7. If SRAM full: TIU names least-important block → KV Engine signals evict → MHC spills to DRAM (warm) or trashes (cold). `[HW]`
+8. "blue" becomes a new memory → compressed into SRAM → loop.
+
+**What each track proves:** A = compression doesn't break TIU eviction; B = the scorer predicts well enough to seed the TIU; C = one scorer weight-set is enough (no swappable per-domain bank).
+
 ### Part 1 — Training Pipeline (you run this once to build the scorer)
 
 ```
