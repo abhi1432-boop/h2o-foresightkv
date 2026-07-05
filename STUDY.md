@@ -210,6 +210,31 @@ YOUR RESULTS:
 
 ---
 
+## Quantization & Bits — 3-bit deep dive (reference)
+
+**What a bit is:** one 0/1 (a light switch). **N bits = 2^N values.** So `3 bits = 8 values`, `4 bits = 16`, `8 bits = 256`. Each bit doubles the options.
+
+**What quantization is:** the real numbers (key coords) are floats (16–32 bits, ~infinite values). Quantization forces each onto a small **menu** of allowed values and rounds to the nearest. You store the tiny **index** (which menu item) + one shared **scale**, not the full number. That's the compression.
+
+**INT-N naming:** the number = how many bits per value = menu size.
+- INT2 = 4 levels, INT3 = 8 levels, INT4 = 16 levels, INT8 = 256 levels.
+
+**The tradeoff (the whole game):** more bits = more accurate but more memory; fewer bits = smaller/faster but coarser. For a 128-number key: FP16 = 2048 bits; INT4 = 512 (4× smaller); INT3 = 384 (~5×); INT2 = 256 (8×). Decode is memory-bound, so fewer bits = smaller KV cache = faster. Goal: fewest bits before quality breaks.
+
+**How to quantize a number (3-bit example, range −8..+8):** chop range into 8 levels (step 2): `-8,-6,-4,-2,0,2,4,6`; round each value to nearest; store its 0–7 index (3 bits) + one scale. Reconstruct = index → level.
+
+**Uniform vs Lloyd-Max:** uniform = evenly-spaced levels (dumb — wastes levels where there's no data). **Lloyd-Max** = place the 8 levels *optimally*, crowded where the data clusters (like putting highway rest-stops near towns, not in empty desert). Same 8 levels, far less error. This is why naive uniform INT3 scored 0.575 but TurboQuant's Lloyd-Max scored higher.
+
+**Why 3-bit is AWKWARD / non-traditional (important):** computers work in **8-bit bytes**, and 2/4/8 divide evenly into 8 but **3 does not** (8÷3 = 2.67). So 3-bit values don't pack cleanly — a value straddles two bytes (you need 3 bytes to hold exactly 8 three-bit values). There's also **no native 3-bit datatype/instruction** on CPUs/GPUs, so it's emulated with slow bit gymnastics. Evidence: turboquant-plus `quantizer.py` literally says *"For bits=3: stored as 4-bit (2 per byte) for simplicity"* — the software reference cheats by using 4-bit slots.
+
+**Why the CHIP can use 3-bit anyway (the payoff):** an **ASIC** (custom chip) *designs its own packing circuitry* (`packer.sv`, custom SRAM word layout), so it packs 3-bit (and the odd 4.25 bpv) natively with no byte-alignment tax. A GPU would waste the savings on packing overhead; a purpose-built chip captures them. **Custom silicon can use "weird" bit-widths that general hardware can't — one of the real reasons the accelerator is worth building.**
+
+**Why 3-bit specifically (not 2 or 4):** 2-bit (4 levels) is too coarse, quality collapses; 4-bit (16 levels) is accurate but 33% more memory; **3-bit + rotation + Lloyd-Max + a 1-bit QJL correction reaches near-4-bit quality at ~3-bit cost** — the sweet spot. TurboQuant's whole pitch is making 3 bits punch above their weight.
+
+**bpv (bits per value) and the 4.25 breakdown:** keys = 3 bits (Lloyd-Max) + 1 bit (QJL on the residual) + ~0.25 bit (shared per-block scale/norm, amortized) = **4.25 bpv**. Values skip QJL → 3-bit ≈ **3.0 bpv**. The 4.25-vs-3.0 split = keys pay 1 extra bit for the dot-product-preserving QJL (because keys are matched via Q·Kᵀ); values don't (they're only gathered content).
+
+---
+
 ## The Big Picture
 
 When a language model like phi-2 generates text, it does it one token at a time.
