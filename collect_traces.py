@@ -21,7 +21,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, DynamicCache
 from prompts import TRAIN_PROMPTS, EVAL_PROMPTS, LONG_PROMPTS
 
 MAX_NEW_TOKENS = 200
-MODEL_NAME = "microsoft/phi-2"
+MODEL_NAME = "Qwen/Qwen2.5-3B-Instruct"   # matches Track A + Chaithu's workload band (was phi-2)
 TRACE_DIR  = "traces"
 
 os.makedirs(TRACE_DIR, exist_ok=True)
