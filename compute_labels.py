@@ -54,16 +54,24 @@ def compute_ltc(trace):
 
     ltc_raw = running.clone()
 
-    def normalize(v):
-        lo, hi = v.min(), v.max()
-        return (v - lo) / (hi - lo) if hi > lo else torch.zeros_like(v)
+    def normalize(v, skip=0):
+        # Normalize by the range of the CONTENT (non-sink) entries. The sink is a
+        # single concentrated token that otherwise divides all content down to ~0
+        # (min-max ÷ sink), collapsing the label. Sinks (first `skip` entries) are
+        # always-kept positions, so we exclude them from the range and clip to
+        # [0,1] — exposing the real importance spread among evictable tokens.
+        ref = v[skip:] if v.numel() > skip else v
+        lo, hi = ref.min(), ref.max()
+        if hi <= lo:
+            return torch.zeros_like(v)
+        return ((v - lo) / (hi - lo)).clamp(0.0, 1.0)
 
-    # per-token: average normalized LTC across all horizons
-    normalized = [normalize(snapshots.get(h, ltc_raw)) for h in HORIZONS]
+    # per-token: content-normalized (skip 5 sink positions), averaged over horizons
+    normalized = [normalize(snapshots.get(h, ltc_raw), skip=5) for h in HORIZONS]
     ltc = torch.stack(normalized).mean(dim=0)
 
-    # per-block: pool each horizon snapshot into blocks, normalize, then average
-    block_snapshots = [normalize(pool_blocks(snapshots.get(h, ltc_raw))) for h in HORIZONS]
+    # per-block: pool → content-normalize (skip block 0, the sink block) → average
+    block_snapshots = [normalize(pool_blocks(snapshots.get(h, ltc_raw)), skip=1) for h in HORIZONS]
     ltc_blocks = torch.stack(block_snapshots).mean(dim=0)
 
     return ltc_raw, ltc, ltc_blocks
