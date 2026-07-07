@@ -505,14 +505,15 @@ It proves the architecture is correct and the training data is the only problem.
 
 ## The Numbers That Matter
 
+> ⚠️ **The old Track B scorer numbers (0.791 / 0.780 / 0.734 / 0.998) were a sink-normalization ARTIFACT — SUPERSEDED.** See "Track B/C — CRITICAL CORRECTION (2026-07-07)" below.
+
 | Experiment | Result | What it means |
 |---|---|---|
-| Track B: cross-domain correlation (final) | **+0.791** | Scorer reliably predicts importance across all domains |
-| Track B: within-domain correlation (final) | **+0.780** | Strong prediction within same domain |
-| Track B: scorer block-level agreement | **0.734** | 73.4% of important 16-token blocks correctly *predicted* at prefill |
-| Track B: within-domain top-50 overlap | **0.960** | 48 of the 50 most important tokens correctly identified |
-| Track A: TurboQuant key-quant block agreement | **0.725** | Real chip key path *keeps* 72.5% of block eviction decisions (ranking r = 0.996) |
-| Cross-domain correlation (v1, old) | -0.507 | Original broken result: wrong features + 50-step label horizon |
+| **Track A: TurboQuant key-quant block agreement** | **0.725** | Real chip key path keeps 72.5% of block eviction decisions (ranking r = 0.996) — **SOLID** |
+| **Track B: scorer block-level content corr (long ctx)** | **+0.73** | Corrected metric, sink excluded, 10 long prompts — scorer predicts content-block importance (was −0.611 before the fix) |
+| **Track C: per-domain register file** | **not needed** | Specialists (0.691) ≈ generalist (0.686); no inversion; routing 33%. One general scorer + OOD gate. |
+| ⚠️ Track B "0.791 / 0.998 / 0.734" (old) | **SUPERSEDED** | sink-normalization artifact — measured "spot the always-kept sink," not real importance |
+| ⚠️ Cross-domain −0.507 (v1) | **SUPERSEDED** | broken pipeline; no inversion exists once labels are fixed |
 
 ---
 
@@ -525,7 +526,7 @@ Language models have a memory problem — they can only remember so many past wo
 H2O's per-token accumulators are zero-initialized, making the score distribution flat for the first ~50-100 decode steps and causing cold-start eviction errors. ForesightKV pre-seeds those accumulators with a learned prior trained on LTC labels from completed generations. The scorer takes 5 prefill-only features and outputs a predicted importance score before decoding begins.
 
 **To a hardware person:**
-The scorer is a 5-16-1 MLP with 97 parameters. It runs once per token during prefill, writes a single scalar to each TIU accumulator, then stays silent for the rest of generation. Weights should live in a programmable register file rather than being fixed at tape-out because cross-domain correlation is negative — you need per-workload retraining to get positive alignment.
+The scorer is a 5-16-1 MLP with 97 parameters. It runs **once per prompt** as a VecU epilogue at the end of prefill, pools its per-token output into 128 block scores, seeds the TIU accumulators, then stays silent for the rest of generation. Keep the weights in a **single reprogrammable register set** (so you can update the scorer without a re-tape-out) — but **not** a swappable per-domain bank: the register-file experiment showed specialists ≈ generalist and no inversion, so there's nothing to route to (see Track C, corrected). The OOD gate (β→0 on low confidence) stays as a cheap dormant safety net.
 
 ---
 
@@ -605,8 +606,37 @@ Needs a quantize-once interception to be tractable (pure-Python per-vector).
 
 ---
 
-## Track B — ForesightKV Scorer Training (Final Results, 2026-06-16)
+## Track B/C — CRITICAL CORRECTION: the attention-sink label bug (2026-07-07)
 
+**Everything in the original Track B and Track C sections below used a broken importance label. The headline scorer numbers (0.791 / 0.998 / 0.734 / the −0.507 / the specialist comparisons) were an artifact and are SUPERSEDED.** Here's what actually happened — read this before the old sections.
+
+**Two things changed first:**
+1. The scorer pipeline was on **phi-2** the whole time (`collect_traces.py` was `microsoft/phi-2`), not Qwen. Switched it to **Qwen2.5-3B-Instruct** to match Track A + Chaithu's workload band.
+2. On Qwen, the numbers came out *suspiciously perfect*: cross-domain r = **0.998**, everything ~0.998.
+
+**The red flag → the bug.** Correlation was 0.998 but top-50 overlap was only 0.28–0.76 — a metric that good shouldn't disagree with itself. Root cause: LTC labels were **min-max normalized (÷ the max value)**. Attention **sinks** (the first token) soak up ~all the attention, so the sink WAS the max. Dividing every token by the sink **collapsed all content tokens to ~0**:
+- The label became "sink = 1.0, all content ≈ 0."
+- The "0.998" was just the scorer **detecting the sink** — trivial, and useless (the sink is always kept anyway).
+- Non-sink correlation was actually **−0.118**; non-sink LTC was flat (99% of tokens below 0.05).
+
+**It's a METRIC bug, not a Qwen failure.** Direct attention check on Qwen: healthy distribution — **27% sink, 62% recent, 10% content** (not "99% sink"). phi-2 gave a sane 0.77 only because its sinks are *weaker* (non-sink LTC std 0.28 vs Qwen 0.01) — same bug, mild enough not to fully collapse the label. The newer model's stronger sinks exposed it.
+
+**The fix** (`compute_labels.py`): **content-normalize** — exclude the always-kept sink positions from the normalization range, so content tokens get a real 0–1 spread (and clip sinks to 1).
+
+**Corrected results:**
+- **Track B:** block-level content correlation on long prompts flipped from **−0.611 → +0.73** (sink block excluded). The 5 prefill features DO carry real content signal — the scorer genuinely predicts content-block importance. *Caveat: only 10 long prompts.*
+- **Track C (re-run on corrected labels):** the register-file conclusion HOLDS and is cleaner — oracle/specialists **0.691** ≈ generalist **0.686** (generalist even wins 3/7 leakage-free), wrong-domain scorer ≈ right (0.676 vs 0.691), routing **32.8%**, **no inversion** (wrong_min 0.648, never negative). **One general scorer + OOD gate; don't build the register file.**
+
+**The real remaining gap:** everything is evaluated on mostly-**short** prompts (degenerate for eviction — sinks + recent window dominate). The meaningful signal is **block-level on LONG context**, where we have only **10 prompts**. Both Track B and Track C need a proper **long-context dataset** before the numbers are trustworthy — that's the next step.
+
+**Lessons:** (1) min-max normalization is fragile when one value is an extreme outlier (the sink). (2) The always-kept sink should never have been in the importance *target*. (3) The metric must be **block-level** (what the chip evicts on), **sink-excluded**, on **long context**.
+
+---
+
+## Track B — ForesightKV Scorer Training (2026-06-16) — ⚠️ SUPERSEDED (sink-bug artifact; see correction above)
+
+> ⚠️ **The numbers in this section are the sink-normalization artifact.** They are kept for history only. See "Track B/C — CRITICAL CORRECTION" above for the real story.
+>
 > **Note:** the final numbers below were produced on a Colab T4 run, not locally.
 > The local `scorer.pt` (and `features.pt`/`labels.pt`) will NOT match these results
 > and won't be updated — to reproduce, re-run the pipeline on Colab.
@@ -678,7 +708,9 @@ Architecture works. Data was the bottleneck. With 330 prompts and 200-step label
 
 ---
 
-## Track C — Per-Domain Scorer Bank (Register File Experiment, 2026-06-18)
+## Track C — Per-Domain Scorer Bank (Register File Experiment, 2026-06-18) — ⚠️ numbers below on sink-buggy labels
+
+> ⚠️ **The specific numbers in this section used the sink-buggy labels (phi-2, then unseeded Qwen).** The *conclusion* (don't build the register file) survived re-running on corrected labels — see "Track B/C — CRITICAL CORRECTION" above for the corrected figures (oracle 0.691 ≈ general 0.686, no inversion, routing 33%). This section is kept for the journey.
 
 **Question:** Does a BANK of per-domain specialist scorers beat the single general scorer? This is the empirical test of the programmable-register-file thesis — instead of one set of 97 weights baked into silicon, hold one weight set per workload and load the matching one (with the OOD gate as fallback when none match).
 
