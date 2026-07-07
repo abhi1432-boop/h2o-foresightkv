@@ -184,25 +184,33 @@ def main():
             ba = topk_agreement(fp_blk, q_blk, blk_k)
             tr = corr(fp_tok, q_tok)
             br = corr(fp_blk, q_blk)
-            results[c].append((ta, ba, tr, br))
-            print(f"   {c:<5} token_agree={ta:.3f}  block_agree={ba:.3f}  "
-                  f"token_r={tr:.3f}  block_r={br:.3f}")
+            # sink-excluded (content-only): drop block 0, the always-kept sink block,
+            # which trivially agrees in fp and quantized and inflates the metrics.
+            if len(fp_blk) > 1:
+                k_content = max(1, blk_k - 1)
+                bac = topk_agreement(fp_blk[1:], q_blk[1:], k_content)
+                brc = corr(fp_blk[1:], q_blk[1:])
+            else:
+                bac, brc = float("nan"), float("nan")
+            results[c].append((ta, ba, tr, br, bac, brc))
+            print(f"   {c:<5} block_agree={ba:.3f}  block_agree_content={bac:.3f}  "
+                  f"block_r={br:.3f}  block_r_content={brc:.3f}")
 
     print("\n" + "=" * 70)
     print(f"AVERAGE over {len(prompts)} prompts   "
           f"(token budget={TOKEN_BUDGET}, block size={BLOCK_SIZE})")
-    print(f"{'condition':<18}{'token_agree':>13}{'block_agree':>13}"
-          f"{'token_r':>10}{'block_r':>10}")
-    print("-" * 70)
+    print(f"{'condition':<18}{'block_agree':>12}{'blk_agree_content':>18}"
+          f"{'block_r':>10}{'block_r_content':>17}")
+    print("-" * 75)
     names = {"tq4": "TurboQuant b=4", "int4": "naive INT4", "int3": "naive INT3"}
     for c in ["tq4", "int4", "int3"]:
         rows = np.array(results[c])
-        m = np.nanmean(rows, axis=0)
-        print(f"{names[c]:<18}{m[0]:>13.3f}{m[1]:>13.3f}{m[2]:>10.3f}{m[3]:>10.3f}")
-    print("=" * 70)
-    print("\ntoken_agree / block_agree = fraction of the keep set that matches "
-          "full precision\nblock_agree is the number the chip cares about "
-          "(it evicts whole 16-token blocks)")
+        m = np.nanmean(rows, axis=0)  # [ta, ba, tr, br, bac, brc]
+        print(f"{names[c]:<18}{m[1]:>12.3f}{m[4]:>18.3f}{m[3]:>10.3f}{m[5]:>17.3f}")
+    print("=" * 75)
+    print("\nblock_agree = fraction of kept 16-token blocks matching full precision.")
+    print("*_content = SINK-EXCLUDED (drop block 0): the honest content-eviction")
+    print("fidelity, since the sink block is always kept and trivially agrees.")
 
 
 if __name__ == "__main__":
