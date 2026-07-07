@@ -1,6 +1,6 @@
 # H2O + ForesightKV
 
-H2O (Heavy Hitter Oracle) KV cache eviction extended with ForesightKV pre-seeding and beta decay, implemented on Microsoft phi-2. Also includes quantization impact analysis measuring how KV cache compression affects eviction signal quality.
+H2O (Heavy Hitter Oracle) KV cache eviction extended with ForesightKV pre-seeding and beta decay, targeting the **LonghornSilicon** LLM-inference accelerator. Originally prototyped on Microsoft phi-2 (`model.py`, `evaluate.py`); the current scorer training and quantization experiments (Tracks A/B/C) run on **Qwen2.5-3B-Instruct**. Also measures how the real KV-cache compression path affects H2O's eviction decisions.
 
 Paper: [NeurIPS 2023](https://neurips.cc/virtual/2023/poster/71645) · [arXiv](https://arxiv.org/abs/2306.14048)
 
@@ -19,34 +19,31 @@ Everything else gets evicted.
 
 Standard H2O initializes eviction scores to zero and relies entirely on observed attention. This causes cold-start errors — tokens evicted before they've had time to accumulate attention are gone forever even if they would have become important.
 
-ForesightKV replaces the zero initialization with a learned prior. A small MLP (Scorer) is trained to predict each token's Long-Term Contribution (LTC) score from 5 prefill-only features:
+ForesightKV replaces the zero initialization with a learned prior. A small MLP (Scorer, ~97 parameters) is trained to predict each token's Long-Term Contribution (LTC) score from 5 prefill-only features:
 
 - Normalized position in the prompt
 - Whether the token is a sink (first 5 positions)
-- Token frequency in the training corpus
-- Total prefill attention (summed across layers)
-- Weighted mean layer index (where in the network the token receives attention)
+- Late-layer attention (attention from the top 1/3 of layers at prefill)
+- Early-layer attention (attention from the bottom 1/3 of layers)
+- Layer consistency (how uniformly the token is attended across layer depths)
 
-After the prefill step, the Scorer runs once and seeds the accumulator with its predictions. From that point, real attention accumulates on top of the predictions. Beta decay fades out the prior over time so that by decode step 50 the prior has nearly vanished and real attention drives eviction decisions on its own.
+After the prefill step, the Scorer runs once and seeds the accumulator with its predictions. From that point, real attention accumulates on top of the predictions. Beta decay fades out the prior over time so that by ~decode step 50 the prior has nearly vanished and real attention drives eviction decisions on its own. LTC labels use a 200-step, multi-horizon window (50/100/150/200) so the target reflects genuine long-term importance, not just cold-start attention.
 
-## Quantization impact
+## Quantization vs. eviction (Track A)
 
-We measure how much quantizing the KV cache degrades the eviction signal H2O depends on, across INT8, INT4, and INT3 precision.
+The headline question: does compressing the KV **keys** change which tokens H2O evicts? `quant_eviction_blocks.py` models the **real chip key path** — `TurboQuantProd(bits=4)` = rotation → 3-bit Lloyd-Max → 1-bit QJL on the residual ≈ 4.25 bpv — applied to keys *before* the QK^T product (so the noise compounds every decode step), on Qwen2.5-3B.
 
-**quantization_impact.py** — approximation: applies quantization to saved attention weights post-softmax and measures how much the LTC ranking and top-k eviction decisions shift.
+Result (10 prompts, 16-token blocks, budget 64):
 
-**quantization_direct.py** — direct method: re-runs phi-2 with a `QuantizedDynamicCache` that quantizes K and V at storage time, so every attention computation uses noisy K/V vectors. Requires float32; float16 produces NaN on MPS during decode steps. For scale, run on a CUDA device.
+| Condition | block agreement | rank correlation (token_r) |
+|-----------|-----------------|----------------------------|
+| **TurboQuant b=4 (real path)** | **0.725** | **0.996** |
+| naive INT4 | 0.600 | 0.793 |
+| naive INT3 | 0.575 | 0.797 |
 
-Results from the approximation across 30 eval prompts:
+TurboQuant preserves the importance *ranking* almost perfectly (r = 0.996); the only real loss is at the discrete top-k block boundary, where near-tied blocks flip. Naive uniform INT3/INT4 do far worse because they mangle the outlier channels TurboQuant's rotation spreads out first. **block agreement is the number the chip cares about** (the TIU evicts whole 16-token blocks). See `STUDY.md` for the full analysis and the recent-token-buffer sweep.
 
-| Precision | LTC correlation | top-k evict agree |
-|-----------|----------------|-------------------|
-| FP32 (baseline) | 1.000 | 1.000 |
-| INT8 | 1.000 | 0.992 |
-| INT4 | 0.999 | 0.689 |
-| INT3 | 0.997 | 0.681 |
-
-The importance ranking survives 3-bit well (r=0.997) but ~1 in 3 borderline tokens flip at the eviction cutoff. Most noise appears at INT4 — going from 4 to 3 bits barely makes it worse.
+> An earlier approximation (`quantization_impact.py` / `quantization_direct.py`, phi-2) applied quantization *post-softmax* and estimated INT3 top-k agreement at ~0.68. That was the *optimistic* version (noise added after the math); Track A models the real *before*-QK^T path and is the number to trust.
 
 ## Upstream / hardware references (LonghornSilicon accelerator)
 
@@ -82,30 +79,38 @@ estimator, so the simulation is faithful. See `STUDY.md` for the full results.
 | `eval_domain_bank.py` | Track C: z-score router + oracle/learned/general/wrong policy eval |
 | `train_general_clean.py` | Track C: leakage-free general-vs-oracle comparison |
 | `patch.py` | `H2OCacheAdapter` (inherits `DynamicCache`) + `patch_model` hooks |
-| `model.py` | Loads phi-2, runs baseline vs H2O comparison |
-| `collect_traces.py` | Runs phi-2 on all prompts, saves attention weights at every decode step |
-| `compute_labels.py` | Computes LTC scores from saved traces, saves labels.pt |
+| `kv_cache_engine_ref.py` | Vendored bit-accurate reference model of the kv-cache-engine (silicon ground truth) |
+| `collect_traces.py` | Runs **Qwen2.5-3B** on all prompts (200 decode steps), saves attention at every step |
+| `compute_labels.py` | Computes multi-horizon LTC scores from saved traces, saves labels.pt |
 | `extract_features.py` | Extracts 5 prefill-only features per token, saves features.pt |
-| `train_scorer.py` | Trains the Scorer MLP, exports weights |
-| `evaluate.py` | Runs H2O baseline vs H2O+ForesightKV, measures cold-start errors |
-| `quantization_impact.py` | Post-softmax quantization approximation across 30 eval prompts |
-| `quantization_direct.py` | Direct K/V quantization at storage time (CUDA recommended) |
+| `train_scorer.py` | Trains the Scorer MLP (seeded), exports fixed-point weights |
+| `model.py` / `evaluate.py` | Original phi-2 H2O demo: baseline vs H2O+ForesightKV, cold-start errors |
+| `quantization_impact.py` / `quantization_direct.py` | Early phi-2 post-softmax quantization approximation (superseded by Track A) |
 
 ## Run it
 
 ```bash
-pip install transformers torch scipy
+pip install "transformers==5.8.1" torch scipy
+
+# Scorer pipeline (Qwen2.5-3B) — collect_traces is the slow part, best on a GPU
+python3 collect_traces.py       # runs Qwen2.5-3B on all prompts (200 steps), saves traces/
+python3 compute_labels.py       # multi-horizon LTC labels → labels.pt
+python3 extract_features.py     # 5 prefill-only features → features.pt
+python3 train_scorer.py         # train the Scorer MLP (Track B)
+python3 train_domain_bank.py    # per-domain scorer bank (Track C)
+python3 eval_domain_bank.py     # routing / oracle / general / wrong policies (Track C)
+
+# Track A — quantization vs eviction (Qwen2.5-3B)
+python3 quant_eviction_blocks.py  # real TurboQuant key path, block-level agreement
+
+# Original phi-2 H2O demo (separate)
 python3 model.py                # H2O baseline vs ForesightKV on one prompt
-python3 collect_traces.py       # collect attention traces (runs phi-2, takes time)
-python3 compute_labels.py       # compute LTC labels from traces
-python3 extract_features.py     # extract scorer features
-python3 train_scorer.py         # train the Scorer MLP
 python3 evaluate.py             # measure cold-start improvement
-python3 quantization_impact.py  # quantization impact (fast, uses saved traces)
 ```
 
 ## Notes
 
-- Uses `attn_implementation="eager"` — sdpa hides attention weights from hooks
-- Phi-2 is a base model, prompts use `Instruct: ... Output:` format
-- Greedy decoding throughout
+- Uses `attn_implementation="eager"` — sdpa hides attention weights (needed for `output_attentions`)
+- Scorer + Track A run on **Qwen2.5-3B** (head_dim 128); the original H2O demo (`model.py`/`evaluate.py`) is on **phi-2**
+- Prompts use the `Instruct: ... Output:` format; greedy decoding throughout
+- Heavy runs (traces, quantization) are done on Colab T4 — TurboQuant's `searchsorted` is flaky on Apple MPS
