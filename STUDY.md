@@ -633,6 +633,39 @@ Needs a quantize-once interception to be tractable (pure-Python per-vector).
 
 ---
 
+## Sink severity diagnostic — how bad the sinks actually get (2026-07-08)
+
+Measured directly from the 150 saved traces (`traces/`, Qwen2.5-3B, 32 layers). Attention was summed over heads+queries per key token, then **normalized to a per-layer fraction** (÷ total mass) before averaging. First 5 positions = sink. This quantifies the sink problem instead of citing one number.
+
+**Sink fraction by decode step** (avg over layers + prompts):
+
+| step | SHORT sink | SHORT content_range | LONG sink | LONG content_range |
+|------|-----------|--------------------|-----------|--------------------|
+| 0 (prefill) | **82.7%** | 0.109 | **69.6%** | **0.013** |
+| 5   | 29.1% | 0.426 | 24.6% | 0.411 |
+| 10  | 24.1% | 0.394 | 23.8% | 0.406 |
+| 20  | 20.1% | 0.366 | 24.1% | 0.412 |
+| 30  | 19.7% | 0.354 | 23.4% | 0.411 |
+| 50  | 17.7% | 0.329 | 22.5% | 0.402 |
+
+**Two findings that matter:**
+
+1. **The sink is catastrophic at prefill, then settles.** 70–83% at step 0, dropping to a steady ~20–25% once decode gets going. It is **not** a flat 88% the whole time. The danger window is the **prefill seed** — which is exactly when the scorer writes the TIU registers. Raw prefill attention is ~83% garbage, so seeding the TIU on sink-excluded scorer output isn't optional, it's load-bearing.
+
+2. **The label-bug smoking gun is in the raw data.** At prefill on long prompts, `content_range = 0.013` — every content token is squeezed into a 0.013-wide band by the sink. That is *why* min-max normalizing by the sink max collapsed content to zero. By step 5 the range is 0.41 (30× wider). Confirms the correction above from an independent angle.
+
+**Sink fraction by layer** (avg over steps + prompts): the sink lives in the **middle layers**. Layers 0–1 barely use it (0.7–5.6%), layers 2–27 are the sink band (~25–30%), layers 28–31 taper off (10–22%). A sink-robust TIU does not need to treat all layers identically.
+
+**Honesty note for Chaithu:** the "~88% sink" figure is the **LTC label** metric (accumulated over the whole trace, which over-weights the prefill spike). The **direct per-step** sink is 20–25% during decode, spiking to 70–83% at prefill. Both true, different measurements — state which one when presenting.
+
+Diagnostic is a throwaway script against existing traces (no new run).
+
+![Attention sink severity — sink fraction collapses after prefill, content spread crushed at prefill, sink concentrated in middle layers](sink_diagnostic.png)
+
+*Left: sink fraction craters from the prefill spike down to ~20% by step 5 (the dashed 88% is the LTC-metric, which over-weights prefill). Middle: content token range is ~0.01 at prefill then jumps 30× — the label-bug smoking gun. Right: the sink lives in the middle layers (2–27), barely present at the edges.*
+
+---
+
 ## Track B — ForesightKV Scorer Training (2026-06-16) — ⚠️ SUPERSEDED (sink-bug artifact; see correction above)
 
 > ⚠️ **The numbers in this section are the sink-normalization artifact.** They are kept for history only. See "Track B/C — CRITICAL CORRECTION" above for the real story.
