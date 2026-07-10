@@ -480,7 +480,7 @@ Prints a comparison table. Lower errors and higher token match = better.
 
 ### cold_start_alignment.py — The Key Experiment
 
-This is the experiment Chaithu asked for directly.
+This is the core experiment for the hardware target.
 
 For each eval prompt:
 1. Run the scorer on the prefill features to get predicted importance scores
@@ -551,7 +551,7 @@ The scorer is a 5-16-1 MLP with 97 parameters. It runs **once per prompt** as a 
 
 **What the metrics mean:**
 - `token_agree` — fraction of the 64-token keep set that matches full precision
-- `block_agree` — fraction of the kept 16-token blocks that match full precision (this is the number Chaithu asked for; budget keeps the top ~4 blocks of 9–12)
+- `block_agree` — fraction of the kept 16-token blocks that match full precision (this is the number the chip cares about; budget keeps the top ~4 blocks of 9–12)
 - `token_r` — Pearson correlation of the full importance ranking vs fp
 - `block_r` — same but after summing importance into 16-token blocks
 
@@ -562,11 +562,11 @@ Block-level keep-set agreement, however, is **0.725**, not perfect. `block_agree
 
 > **Supersedes the 2026-06-13 single-prompt result.** That run (1 prompt, 10 blocks) reported `block_agree = 1.000` for *both* TurboQuant and naive INT3 — both were small-sample artifacts. INT3's apparent perfection collapsed to 0.575 once averaged over 10 prompts, confirming the 1.000s were luck, not fidelity.
 
-**The number for Chaithu:** at the real key path, the importance *ranking* is preserved almost exactly (`token_r = 0.996`) and TurboQuant is clearly the best quantizer, but block-eviction agreement is **0.725** — meaningfully above the naive baselines (~0.59), not the perfect 1.000 the single-prompt test implied. The old 0.68 number came from post-softmax noise + naive INT3 (both wrong assumptions); the honest figure for the real path is ~0.73 block agreement with near-perfect ranking correlation.
+**The headline number:** at the real key path, the importance *ranking* is preserved almost exactly (`token_r = 0.996`) and TurboQuant is clearly the best quantizer, but block-eviction agreement is **0.725** — meaningfully above the naive baselines (~0.59), not the perfect 1.000 the single-prompt test implied. The old 0.68 number came from post-softmax noise + naive INT3 (both wrong assumptions); the honest figure for the real path is ~0.73 block agreement with near-perfect ranking correlation.
 
 ### Reference verification — "check your work" against the real repos (2026-06-18)
 
-Cross-checked the implementation against the three LonghornSilicon/turboquant-plus repos Chaithu named:
+Cross-checked the implementation against the three LonghornSilicon/turboquant-plus reference repos:
 - **quantizer matches.** Our vendored `turboquant/quantizer.py` is byte-identical to turboquant-plus's. `TurboQuantProd(bits=4)` = 3-bit Lloyd-Max MSE + 1-bit QJL on the residual = **4.25 bpv**, which matches the `kv-cache-engine` spec ("keys at 4.25 bpv") exactly. The `dequantize(quantize(K))`→QK^T we used is algebraically identical to the reference's asymmetric `attention_score()` estimator, so the key-path math is faithful, not approximated.
 - **Correction:** the "outlier channels kept FP" feature is in `kv_cache.py`'s docstring but **NOT implemented** in `TurboQuantKVCache`. The only real difference from quantize-everything is the **recent-token buffer** (`buffer_size=128`).
 - **Wired in:** vendored turboquant-plus's `turboquant/kv_cache.py` and the bit-accurate `kv_cache_engine_ref.py` (pure-Python, verified round-trip at dim=128, key_bpv=4.25 — the silicon ground truth).
@@ -611,7 +611,7 @@ Needs a quantize-once interception to be tractable (pure-Python per-vector).
 **Everything in the original Track B and Track C sections below used a broken importance label. The headline scorer numbers (0.791 / 0.998 / 0.734 / the −0.507 / the specialist comparisons) were an artifact and are SUPERSEDED.** Here's what actually happened — read this before the old sections.
 
 **Two things changed first:**
-1. The scorer pipeline was on **phi-2** the whole time (`collect_traces.py` was `microsoft/phi-2`), not Qwen. Switched it to **Qwen2.5-3B-Instruct** to match Track A + Chaithu's workload band.
+1. The scorer pipeline was on **phi-2** the whole time (`collect_traces.py` was `microsoft/phi-2`), not Qwen. Switched it to **Qwen2.5-3B-Instruct** to match Track A + the target workload band.
 2. On Qwen, the numbers came out *suspiciously perfect*: cross-domain r = **0.998**, everything ~0.998.
 
 **The red flag → the bug.** Correlation was 0.998 but top-50 overlap was only 0.28–0.76 — a metric that good shouldn't disagree with itself. Root cause: LTC labels were **min-max normalized (÷ the max value)**. Attention **sinks** (the first token) soak up ~all the attention, so the sink WAS the max. Dividing every token by the sink **collapsed all content tokens to ~0**:
@@ -656,13 +656,59 @@ Measured directly from the 150 saved traces (`traces/`, Qwen2.5-3B, 32 layers). 
 
 **Sink fraction by layer** (avg over steps + prompts): the sink lives in the **middle layers**. Layers 0–1 barely use it (0.7–5.6%), layers 2–27 are the sink band (~25–30%), layers 28–31 taper off (10–22%). A sink-robust TIU does not need to treat all layers identically.
 
-**Honesty note for Chaithu:** the "~88% sink" figure is the **LTC label** metric (accumulated over the whole trace, which over-weights the prefill spike). The **direct per-step** sink is 20–25% during decode, spiking to 70–83% at prefill. Both true, different measurements — state which one when presenting.
+**Honesty note:** the "~88% sink" figure is the **LTC label** metric (accumulated over the whole trace, which over-weights the prefill spike). The **direct per-step** sink is 20–25% during decode, spiking to 70–83% at prefill. Both true, different measurements — be clear which one when presenting.
 
 Diagnostic is a throwaway script against existing traces (no new run).
 
 ![Attention sink severity — sink fraction collapses after prefill, content spread crushed at prefill, sink concentrated in middle layers](sink_diagnostic.png)
 
 *Left: sink fraction craters from the prefill spike down to ~20% by step 5 (the dashed 88% is the LTC-metric, which over-weights prefill). Middle: content token range is ~0.01 at prefill then jumps 30× — the label-bug smoking gun. Right: the sink lives in the middle layers (2–27), barely present at the edges.*
+
+---
+
+## Sink-Robust TIU — the redesign (2026-07-09)
+
+**The problem in one line:** we can't retrain Qwen to stop using the sink (softmax1 / register tokens all need pretraining; LHS serves pretrained models). So instead of removing the sink from the *model*, we make the *TIU* robust to it. The sink is a real token with a **loud key** (attracts huge attention) but a **near-empty value** (injects almost nothing) — so its high attention score is *fake importance*. The TIU's job is to keep it but stop it from corrupting the eviction ranking of everything else.
+
+**Register file layout — one pin bit per block:**
+
+```
+┌──────────── TIU register file (128 blocks, 16 tokens each) ────────────┐
+│   each register:  [ importance : N-bit fixed point ][ pin : 1 bit ]     │
+│                                                                         │
+│   block 0   [ 0.84 ][pin=1]  ← SINK block: pinned, never evicted,       │
+│                                 AND excluded from the scale calc         │
+│   block 1   [ 0.31 ][pin=0]  ┐                                          │
+│   block 2   [ 0.12 ][pin=0]  │  content blocks — ranked against          │
+│   block 3   [ 0.09 ][pin=0]  │  each other for eviction. The shared      │
+│   ...                        │  scale is set by the MAX of THESE          │
+│   block 6   [ 0.28 ][pin=0]  │  (sink excluded), so they spread across    │
+│   block 7   [ 0.55 ][pin=0]  ┘  the full bit width and stay separable.   │
+│   ...                                                                   │
+│   block 127 [ 0.71 ][pin=1]  ← RECENCY window: pinned (H2O always keeps) │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**The four changes (two cheap, one is the real lever, one mostly exists):**
+
+1. **Pin bit — protect the sink from eviction.** 1 bit per register (128 bits total, trivial). Eviction changes from "evict lowest importance" to "evict lowest importance *among blocks where pin==0*." Set pin=1 on the sink block and the recency-window blocks at prefill. Safe whether or not the sink is semantically important — pinning = keeping, and keeping is correct in both cases.
+
+2. **Exclude the sink from the scale — THE REAL LEVER.** When the register file computes its shared fixed-point scale (the `amax` over blocks), exclude pinned blocks. Then the scale is set by the biggest *content* block, not the sink, so content blocks get the full bit width to separate. This is `skip=1` from `compute_labels.py`, in hardware. **Whether this change is even needed depends on the register-file design:** if each block is independent fixed point, the sink never crushed anyone and this is moot; if the file shares one scale, this is *the* fix. **→ Open hardware question: does the TIU register file share a scale across the 128 blocks, or is each independent?**
+
+3. **Sink-excluded scorer seed — cover the prefill window.** The diagnostic above shows the danger is the *prefill* moment (83% sink, content crushed to 0.013). The scorer already runs at prefill and seeds the TIU; the change is that it's *trained sink-excluded*, so the seed ranks content honestly instead of pointing at the always-kept sink. Mostly exists — it's a label/training thing plus the VecU→TIU write path already in the architecture.
+
+4. **Beta-decay handoff — fade the seed as real attention builds.** `importance[b] = beta*importance[b] + attn[b]` for content blocks only; pinned blocks never accumulate, so the sink's ~20% steady-state attention never re-enters the file during decode. The seed is a bridge over the blank early window; real attention takes over by ~step 50. Exists in `h2o_cache.py`, needs the hardware accumulator form.
+
+**What's new vs what exists:**
+
+| Change | Status |
+|--------|--------|
+| 1. Pin bit | cheap new hardware, standard |
+| 2. Sink-excluded scale | the real new lever — depends on register-file design (open hardware question) |
+| 3. Sink-excluded scorer seed | mostly exists (VecU write path + sink-excluded training) |
+| 4. Beta-decay accumulator | exists in SW, needs HW form |
+
+**Why the sink attention never fades (and why that's fine):** the sink's *attention* drops from ~83% at prefill to ~20% and holds there the whole generation — it never disappears. What fades is the *scorer seed* (beta decay). We don't wait for the sink to go away (it doesn't); we neutralize it with the pin bit + scale exclusion so its permanent ~20% can't hurt the content ranking.
 
 ---
 
@@ -714,7 +760,7 @@ Diagnostic is a throwaway script against existing traces (no new run).
 | 180 | 0.0338 | 0.778 | 0.960 |
 | 200 | 0.0336 | **0.780** | **0.960** |
 
-**Block-level agreement (the number Chaithu asked for):**
+**Block-level agreement (the number the chip cares about):**
 After pooling per-token scorer outputs into 16-token blocks (mean within each block), compared against `ltc_blocks` ground truth. Evaluated on 64 held-out prompts, comparing top-50% of blocks:
 
 **block_agree = 0.734**
@@ -736,7 +782,7 @@ The eval set is 64 prompts concatenated into ~1036 tokens. top-50 is measured gl
 **The key result:**
 Cross-domain r = +0.791 means the scorer generalizes — it is not overfitting to one type of text. Block-level agreement = 0.734 means 73% of the important blocks the TIU would track are correctly identified at prefill. Within-domain r = +0.780 with 96% top-50 overlap means the architecture is not the bottleneck.
 
-**The conclusion Chaithu asked for:**
+**The conclusion:**
 Architecture works. Data was the bottleneck. With 330 prompts and 200-step labels the scorer crosses r=0.79 cross-domain and block_agree=0.734 — well above the random baseline of 0.5. ForesightKV pre-seeding will meaningfully shift eviction decisions at the start of generation.
 
 ---
@@ -779,7 +825,7 @@ The bank's mean per-domain r (0.647) is *below* the general scorer (0.747). But 
 
 **Caveat — not yet apples-to-apples:** the generalist's 0.747 is measured on a mixed 64-prompt eval set, while each specialist is measured on its own domain's test set. A fair comparison evaluates the generalist ON each domain's test set (the "single general scorer" policy in the planned routing eval, Part 3).
 
-**The conclusion (the cheap lesson Chaithu wanted):**
+**The conclusion (the cheap lesson):**
 At ~300 total prompts, per-domain specialization can't be fairly tested — splitting the data into 7 piles starves each scorer. The register-file thesis is not refuted (Factual-Long signals specialists would win with enough data), but to test it properly you need **a few hundred prompts PER domain, not in total**. This is exactly the "learn it on 300 prompts, not 3,000" outcome: scale per-domain data before scaling the number of domains.
 
 ### Parts 2 & 3 — Router + four-policy eval (2026-06-18)
@@ -880,12 +926,12 @@ decide register-file-vs-generalist either way.
 3. **Specialists data-starved except Factual-Long** (0.853 with 2× data). Robust.
 4. **General-vs-specialist is a statistical tie at this scale** — cannot be
    called without seeding + multi-run averaging. NOT robust; do not report a
-   winner to Chaithu.
+   winner externally.
 
 **CRITICAL TODO before the email:** seed all training (`torch.manual_seed`,
 seeded DataLoader generator) and re-run, OR average ≥3 runs and report mean ± sd.
 The current swing (±0.08 cross-domain) is too large to put a single headline
-number in front of Chaithu. Track A (0.725, deterministic) is unaffected.
+number in front of anyone. Track A (0.725, deterministic) is unaffected.
 
 ### Part 5 — SEEDED final numbers (SEED=42, reproducible, 2026-06-23)
 
